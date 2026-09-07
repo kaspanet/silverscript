@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use kaspa_txscript::{max_script_element_size, script_builder::ScriptBuilderError};
+
 use crate::ast::{
     ArrayDim, BinaryOp, ContractFieldAst, Expr, ExprKind, FunctionAst, SplitPart, TypeBase, TypeRef, UnaryOp, UnarySuffixKind,
     as_cast_type, is_temporal_unit,
@@ -154,6 +156,12 @@ pub(super) fn check_expr<'i>(
         }
     };
 
+    if let Some(actual_size) = fixed_type_size(&actual, ctx.constants)? {
+        let maximum = max_script_element_size(true);
+        if actual_size > maximum {
+            return Err(ScriptBuilderError::ElementExceedsMaxSize(actual_size, maximum).into());
+        }
+    }
     ensure_expected(&actual, expected, ctx.constants)?;
     Ok(actual)
 }

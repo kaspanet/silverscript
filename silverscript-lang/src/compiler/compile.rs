@@ -3,14 +3,16 @@ use super::covenant_declarations::lower_covenant_declarations;
 use super::infer_array::lower_inferred_array_sizes;
 use super::inline_functions::lower_inline_functions;
 use super::stack_bindings::StackBindings;
-use super::static_check::{static_check_contract, validate_concrete_constructor_argument, validate_declaration_names};
+use super::static_check::{static_check_contract, validate_constructor_argument, validate_declaration_names};
 use super::ternary::lower_ternaries;
 use super::*;
 use kaspa_consensus_core::config::params::MAINNET_PARAMS;
+use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::tx::PopulatedTransaction;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
-use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE};
+use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE, NO_COST_OPCODE, max_ops_per_script, max_scripts_size, parse_script};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
@@ -43,13 +45,13 @@ pub(super) fn compile_contract_impl<'i>(
     source: Option<&'i str>,
 ) -> Result<CompiledContract<'i>, CompilerError> {
     validate_declaration_names(contract)?;
-    // Constructor arguments enter the constant environment below, so reject
-    // evaluatable expression forms before any inference or lowering can use them.
+    // Constructor arguments enter the constant environment below. Validate
+    // their expression shape before inference or lowering can treat them as constants.
     if contract.params.len() != constructor_args.len() {
         return Err(CompilerError::Unsupported("constructor argument count mismatch".to_string()));
     }
     for (param, value) in contract.params.iter().zip(constructor_args) {
-        validate_concrete_constructor_argument(param, value)?;
+        validate_constructor_argument(param, value)?;
     }
 
     let mut constants: HashMap<String, Expr<'i>> =
@@ -166,6 +168,33 @@ fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>], state_fiel
     Ok(())
 }
 
+fn validate_txscript_bytecode_limits(bytecode: &[u8]) -> Result<(), CompilerError> {
+    let maximum_operations = usize::try_from(max_ops_per_script(true))
+        .map_err(|_| CompilerError::BytecodeLimitAnalysis("negative opcode limit".to_string()))?;
+    validate_txscript_bytecode_limits_with(bytecode, max_scripts_size(true), maximum_operations)
+}
+
+fn validate_txscript_bytecode_limits_with(
+    bytecode: &[u8],
+    maximum_size: usize,
+    maximum_operations: usize,
+) -> Result<(), CompilerError> {
+    let mut operations = 0usize;
+    for opcode in parse_script::<PopulatedTransaction<'_>, SigHashReusedValuesUnsync>(bytecode) {
+        let opcode = opcode.map_err(|err| CompilerError::BytecodeLimitAnalysis(err.to_string()))?;
+        if opcode.value() > NO_COST_OPCODE {
+            operations = checked_add(operations, 1)?;
+        }
+    }
+    if operations > maximum_operations {
+        return Err(CompilerError::BytecodeTooManyOperations { actual: operations, maximum: maximum_operations });
+    }
+    if bytecode.len() > maximum_size {
+        return Err(CompilerError::BytecodeTooLarge { actual: bytecode.len(), maximum: maximum_size });
+    }
+    Ok(())
+}
+
 fn validate_signature_script_limits<'i>(
     bytecode: &[u8],
     entrypoints: &[&FunctionAst<'i>],
@@ -259,7 +288,7 @@ fn compile_contract_bytecode_iteration<'i>(
     struct_array_param_groups: &StructArrayParamGroups,
     debug_recorder: &mut DebugRecorder<'i>,
 ) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
-    let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants, bytecode_size)?;
+    let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants)?;
 
     let state_start: usize = if state_push_bytecode.is_empty() {
         0
@@ -279,6 +308,7 @@ fn compile_contract_bytecode_iteration<'i>(
     )?;
     let bytecode = build_contract_bytecode(debug_recorder, &state_push_bytecode, &compiled_entrypoints, dispatches)?;
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
+    validate_txscript_bytecode_limits(&bytecode)?;
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
     stack_analysis::validate_bytecode_stack_limits(
         &compiled_entrypoints,
@@ -404,6 +434,19 @@ pub fn compile_debug_expr<'i>(
 #[cfg(test)]
 mod signature_script_limit_tests {
     use super::*;
+
+    #[test]
+    fn explicit_txscript_bytecode_limits_reject_size_and_opcode_overflows() {
+        let opcode_error =
+            validate_txscript_bytecode_limits_with(&[OpNop; 4], 10, 3).expect_err("four counted opcodes must exceed a limit of three");
+        assert!(matches!(opcode_error, CompilerError::BytecodeTooManyOperations { actual: 4, maximum: 3 }));
+
+        let size_error = validate_txscript_bytecode_limits_with(&[Op0; 4], 3, 3)
+            .expect_err("four push opcodes must exceed a three-byte script limit");
+        assert!(matches!(size_error, CompilerError::BytecodeTooLarge { actual: 4, maximum: 3 }));
+
+        validate_txscript_bytecode_limits_with(&[OpNop; 3], 3, 3).expect("both limits are inclusive at their boundary");
+    }
 
     #[test]
     fn conservative_argument_sizes_use_maximum_scalar_widths_and_one_dynamic_element() {

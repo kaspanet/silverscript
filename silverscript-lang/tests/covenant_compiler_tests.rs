@@ -26,7 +26,7 @@ fn rejects_stateless_singleton_declaration() {
         matches!(
             err.root(),
             silverscript_lang::errors::CompilerError::Unsupported(message)
-                if message.contains("requires") && message.contains("at least one state field")
+                if message == "covenant declaration on function 'continue_contract' requires contract 'Stateless' to declare at least one state field"
         ),
         "unexpected error: {err}"
     );
@@ -124,6 +124,25 @@ fn infers_cov_binding_from_from_greater_than_one_when_binding_omitted() {
     assert!(compiled.bytecode.clone().contains(&OpCovInputCount));
     assert!(compiled.bytecode.clone().contains(&OpCovOutputCount));
     assert!(compiled.bytecode.clone().contains(&OpCovInputIdx));
+}
+
+#[test]
+fn rejects_covenant_bounds_above_the_iteration_limit() {
+    let source = r#"
+        contract Decls(int max_ins, int max_outs) {
+            byte dummy = 0x00;
+
+            #[covenant(binding = cov, from = max_ins, to = max_outs, mode = verification)]
+            function transition_ok(State[] prev_states, State[] new_states) {}
+        }
+    "#;
+
+    for (args, bound) in [([10_001, 1], "from"), ([2, 10_001], "to")] {
+        let args = args.map(Expr::int);
+        let err = compile_contract(source, &args, CompileOptions::default())
+            .expect_err("generated covenant loops must respect the compiler iteration limit");
+        assert!(err.to_string().contains(&format!("covenant '{bound}' must not exceed 10000")), "unexpected error: {err}");
+    }
 }
 
 #[test]

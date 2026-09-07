@@ -17,8 +17,9 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::{
-    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, parse_script, pay_to_address_script, pay_to_script_hash_script,
-    pay_to_script_hash_signature_script_with_flags, script_to_str, serialize_i64,
+    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, max_ops_per_script, max_script_element_size, max_scripts_size,
+    parse_script, pay_to_address_script, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags, script_to_str,
+    serialize_i64,
 };
 use silverscript_abi::{ArtifactValue, SilAbiArtifact, TypeArtifact};
 use silverscript_lang::ast::{
@@ -427,7 +428,7 @@ fn portable_abi_verifies_and_executes_dynamic_string_state() {
 }
 
 #[test]
-fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
+fn constructor_arguments_must_be_constant_expressions() {
     let source = r#"
         contract RuntimeConstructor(int expected_lock_time) {
             entry main() {
@@ -438,11 +439,17 @@ fn constructor_arguments_are_concrete_values_not_runtime_introspection() {
 
     let err = compile_internal_contract(source, &[Expr::call("OpTxLockTime", vec![])], CompileOptions::default())
         .expect_err("constructor arguments must not evaluate runtime expressions");
-    assert!(err.to_string().contains("constructor argument 'expected_lock_time' must be a concrete value"), "unexpected error: {err}");
+    assert!(
+        err.to_string().contains("constructor argument 'expected_lock_time' must be a constant expression"),
+        "unexpected error: {err}"
+    );
     let contract = parse_contract_ast(source).expect("contract parses");
     contract
         .resolve_contract_state_values(&[Expr::call("OpTxLockTime", vec![])])
-        .expect_err("state resolution must enforce the same concrete constructor boundary");
+        .expect_err("state resolution must enforce the same constant-expression boundary");
+
+    compile_internal_contract(source, &[Expr::call("int", vec![Expr::int(7)])], CompileOptions::default())
+        .expect("constant constructor casts remain supported");
 
     let struct_source = r#"
         contract StructConstructor(Pair pair) {
@@ -17899,6 +17906,87 @@ fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
 }
 
 #[test]
+fn redeem_script_limit_prevents_exceeding_the_txscript_script_size_limit() {
+    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
+    assert!(signature_script_limit < max_scripts_size(true));
+
+    let source = r#"
+        contract OversizedScript() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("compilation must fail before a redeem script can reach the txscript script-size limit");
+    assert!(
+        matches!(err.root(), CompilerError::RedeemScriptTooLarge { actual, maximum }
+            if *actual > *maximum && *maximum == signature_script_limit),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn redeem_script_limit_prevents_exceeding_the_txscript_opcode_limit() {
+    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
+    let opcode_limit = usize::try_from(max_ops_per_script(true)).expect("covenant opcode limit is non-negative");
+    // Every counted opcode occupies at least one byte, so the tighter redeem-script
+    // byte limit makes the opcode limit unreachable.
+    assert!(signature_script_limit < opcode_limit);
+
+    let source = r#"
+        contract ExcessiveOperations() {
+            entry main(int start, int end) {
+                for (i, start, end, 10000) {
+                    require(i >= start);
+                    require(i <= end);
+                    require(i != start - 1);
+                }
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("compilation must fail before a redeem script can contain too many opcodes");
+    assert!(
+        matches!(err.root(), CompilerError::RedeemScriptTooLarge { actual, maximum }
+            if *actual > *maximum && *maximum == signature_script_limit),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn compiler_rejects_statically_oversized_runtime_stack_elements() {
+    let element_limit = max_script_element_size(true);
+    assert_eq!(element_limit, 1_000_000);
+
+    let source = r#"
+        contract OversizedElement() {
+            entry main(byte[200000] data) {
+                byte[] expanded = data + data + data + data + data + data;
+                require(expanded.length == 1200000);
+            }
+        }
+    "#;
+
+    let err = compile_contract(source, &[], CompileOptions::default())
+        .expect_err("a statically known runtime stack element above the txscript limit must be rejected");
+    assert!(
+        matches!(
+            err.root(),
+            CompilerError::ScriptBuild(ScriptBuilderError::ElementExceedsMaxSize(actual, maximum))
+                if *actual == 1_200_000 && *maximum == element_limit
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn compiler_rejects_entry_abis_that_cannot_fit_the_unlocking_stack() {
     fn source_with_params(count: usize) -> String {
         let params = (0..count).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
@@ -18174,24 +18262,50 @@ fn bytecode_stack_limit_analyzes_entrypoint_dispatch_separately() {
 }
 
 #[test]
-fn state_initializer_stack_limit_checks_dynamic_expression_temporaries() {
-    let params = (0..240).map(|index| format!("int p{index}")).collect::<Vec<_>>().join(", ");
-    for terms in [3, 4] {
-        let mut initializer = "byte[]{0x01}".to_string();
-        for _ in 1..terms {
-            initializer = format!("byte[]{{0x01}} + ({initializer})");
+fn rejects_runtime_state_initializer_expressions() {
+    let source = r#"
+        contract Initializer() {
+            byte[] state = byte[]{0x01} + tx.inputs[0].sigScript;
+            entry main() {}
         }
-        let source = format!("contract Initializer() {{ byte[] state = {initializer}; entry main({params}) {{}} }}");
-        let result = compile_contract(&source, &[], CompileOptions::default());
-        if terms == 3 {
-            let compiled = result.expect("initializer peak fits 244 items including arguments and the saved tag");
-            let sigscript = encode_entry_sig_script(&compiled, "main", &vec![ArtifactValue::Int(0); 240]).unwrap();
-            run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("boundary initializer executes");
-        } else {
-            let error = result.expect_err("initializer temporaries overflow even though dispatch fits");
-            assert!(matches!(error.root(), CompilerError::BytecodeStackTooLarge { actual: 245, maximum: 244, .. }), "{error}");
+    "#;
+    let error =
+        compile_contract(source, &[], CompileOptions::default()).expect_err("state initializers must not contain runtime expressions");
+    assert!(
+        error.to_string().contains("contract field 'state' initializer must be a constant expression"),
+        "unexpected error: {error}"
+    );
+
+    let deterministic_opcode_source = r#"
+        contract Initializer() {
+            byte[32] state = blake3(byte[](0x01));
+            entry main() {}
         }
-    }
+    "#;
+    let error = compile_contract(deterministic_opcode_source, &[], CompileOptions::default())
+        .expect_err("state initializers must be serialized values rather than executable opcode expressions");
+    assert!(
+        error.to_string().contains("contract field 'state' initializer must be a constant expression"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn state_initializers_accept_compile_time_integer_arithmetic() {
+    let source = r#"
+        contract Initializer() {
+            int constant OFFSET = 1 + 2;
+            int state = OFFSET * 3;
+
+            entry main() {
+                require(state == 9);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default())
+        .expect("compile-time integer arithmetic is a valid state initializer");
+    let sigscript = encode_single_entry_sig_script(&compiled, &[]).expect("sigscript builds");
+    run_bytecode_with_sigscript(bytecode(&compiled), sigscript).expect("the pre-encoded constant state executes");
 }
 
 #[test]

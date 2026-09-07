@@ -32,6 +32,12 @@ pub enum CompilerError {
     NonCanonicalEntrypointParameter { function: String, param: String },
     #[error("entrypoint dispatch tag collision between {f1} and {f2}")]
     EntrypointDispatchTagCollision { f1: String, f2: String },
+    #[error("compiled script is {actual} bytes, exceeding the txscript limit of {maximum}")]
+    BytecodeTooLarge { actual: usize, maximum: usize },
+    #[error("compiled script contains {actual} counted opcodes, exceeding the txscript limit of {maximum}")]
+    BytecodeTooManyOperations { actual: usize, maximum: usize },
+    #[error("cannot validate compiled bytecode limits: {0}")]
+    BytecodeLimitAnalysis(String),
     #[error("compiled redeem script is {actual} bytes, exceeding the {maximum}-byte signature-script limit")]
     RedeemScriptTooLarge { actual: usize, maximum: usize },
     #[error("entrypoint '{function}' requires {actual} stack items during dispatch, exceeding the consensus limit of {maximum}")]

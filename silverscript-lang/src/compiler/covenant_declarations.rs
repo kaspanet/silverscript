@@ -1,3 +1,4 @@
+use super::static_check::MAX_FOR_LOOP_ITERATIONS;
 use super::*;
 use std::collections::HashSet;
 
@@ -94,7 +95,7 @@ pub(super) fn lower_covenant_declarations<'i>(
         }
 
         let declaration = parse_covenant_declaration(function, constants)?;
-        validate_covenant_policy_state_shape(function, &declaration, &contract.fields)?;
+        validate_covenant_policy_state_shape(function, &declaration, &contract.name, &contract.fields)?;
 
         let policy_name = generated_covenant_policy_name(&function.name);
 
@@ -323,6 +324,10 @@ fn parse_covenant_declaration<'i>(
     if from_value < 1 {
         return Err(CompilerError::Unsupported("covenant 'from' must be >= 1".to_string()));
     }
+    if from_value > MAX_FOR_LOOP_ITERATIONS {
+        return Err(CompilerError::Unsupported(format!("covenant 'from' must not exceed {MAX_FOR_LOOP_ITERATIONS}"))
+            .with_span(&from_expr.span));
+    }
 
     let default_binding = if from_value == 1 { CovenantBinding::Auth } else { CovenantBinding::Cov };
     let binding = match args_by_name.get("binding").copied() {
@@ -439,6 +444,11 @@ fn parse_covenant_declaration<'i>(
     if to_value < 1 {
         return Err(CompilerError::Unsupported("covenant 'to' must be >= 1".to_string()));
     }
+    if to_value > MAX_FOR_LOOP_ITERATIONS {
+        return Err(
+            CompilerError::Unsupported(format!("covenant 'to' must not exceed {MAX_FOR_LOOP_ITERATIONS}")).with_span(&to_expr.span)
+        );
+    }
 
     if args_by_name.contains_key("termination") && !(from_value == 1 && to_value == 1) {
         return Err(CompilerError::Unsupported("termination is only supported for singleton covenants (from=1, to=1)".to_string()));
@@ -468,12 +478,13 @@ fn parse_attr_ident_arg<'i>(name: &str, value: Option<&Expr<'i>>) -> Result<Stri
 fn validate_covenant_policy_state_shape<'i>(
     policy: &FunctionAst<'i>,
     declaration: &CovenantDeclaration<'i>,
+    contract_name: &str,
     contract_fields: &[ContractFieldAst<'i>],
 ) -> Result<(), CompilerError> {
     if contract_fields.is_empty() {
         return Err(CompilerError::Unsupported(format!(
             "covenant declaration on function '{}' requires contract '{}' to declare at least one state field",
-            policy.name, policy.name
+            policy.name, contract_name
         )));
     }
 
@@ -1077,5 +1088,23 @@ mod tests {
             base: TypeBase::Custom(STATE_TYPE_NAME.to_string()),
             array_dims: vec![ArrayDim::Dynamic, ArrayDim::Dynamic],
         }));
+    }
+
+    #[test]
+    fn covenant_bounds_accept_the_iteration_limit() {
+        let source = r#"
+            contract Decls() {
+                byte dummy = 0x00;
+
+                #[covenant(binding = cov, from = 10000, to = 10000, mode = verification)]
+                function transition_ok(State[] prev_states, State[] new_states) {}
+            }
+        "#;
+        let contract = parse_contract_ast(source).expect("contract parses");
+        let function = contract.functions.iter().find(|function| function.name == "transition_ok").expect("policy exists");
+
+        let declaration = parse_covenant_declaration(function, &HashMap::new()).expect("the exact iteration limit remains valid");
+        assert!(matches!(declaration.from_expr.kind, ExprKind::Int(MAX_FOR_LOOP_ITERATIONS)));
+        assert!(matches!(declaration.to_expr.kind, ExprKind::Int(MAX_FOR_LOOP_ITERATIONS)));
     }
 }

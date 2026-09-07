@@ -3,7 +3,7 @@ use super::*;
 use semver::{Comparator, Op, Version, VersionReq};
 use std::collections::{HashMap, HashSet};
 
-const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
+pub(super) const MAX_FOR_LOOP_ITERATIONS: i64 = 10_000;
 
 fn validate_for_loop_iterations<'i>(contract: &ContractAst<'i>, constants: &HashMap<String, Expr<'i>>) -> Result<(), CompilerError> {
     for function in &contract.functions {
@@ -289,15 +289,23 @@ pub(super) fn static_check_contract<'i>(
     Ok(())
 }
 
-pub(super) fn validate_concrete_constructor_argument(param: &ParamAst<'_>, value: &Expr<'_>) -> Result<(), CompilerError> {
-    if is_concrete_constructor_value(value) {
+pub(super) fn validate_constructor_argument(param: &ParamAst<'_>, value: &Expr<'_>) -> Result<(), CompilerError> {
+    if is_const_expr(value) {
         return Ok(());
     }
 
-    Err(CompilerError::Unsupported(format!("constructor argument '{}' must be a concrete value", param.name)).with_span(&value.span))
+    Err(CompilerError::Unsupported(format!("constructor argument '{}' must be a constant expression", param.name))
+        .with_span(&value.span))
 }
 
-fn is_concrete_constructor_value(value: &Expr<'_>) -> bool {
+/// Returns whether an expression already describes a compile-time value.
+///
+/// Literals, literal arrays and structs, and type conversions around those
+/// values qualify. The integer arithmetic already supported by
+/// `eval_const_int` also qualifies. Operations such as hashing,
+/// concatenation, indexing, and introspection require emitted opcodes, so they
+/// are deliberately excluded even when all of their operands are literals.
+pub(super) fn is_const_expr(value: &Expr<'_>) -> bool {
     match &value.kind {
         ExprKind::Int(_)
         | ExprKind::Temporal(_)
@@ -305,9 +313,30 @@ fn is_concrete_constructor_value(value: &Expr<'_>) -> bool {
         | ExprKind::Byte(_)
         | ExprKind::String(_)
         | ExprKind::DateLiteral(_) => true,
-        // Composite values are concrete only when every nested value is.
-        ExprKind::Array { values, .. } => values.iter().all(is_concrete_constructor_value),
-        ExprKind::StructLiteral { fields, .. } => fields.iter().all(|field| is_concrete_constructor_value(&field.expr)),
+        ExprKind::Array { values, .. } => values.iter().all(is_const_expr),
+        ExprKind::StructLiteral { fields, .. } => fields.iter().all(|field| is_const_expr(&field.expr)),
+        ExprKind::Call { name, args, .. }
+            if args.len() == 1
+                && (parse_type_ref(name).is_ok_and(|type_ref| !matches!(type_ref.base, TypeBase::Custom(_)))
+                    || as_cast_type(name).is_some()) =>
+        {
+            args.iter().all(is_const_expr)
+        }
+        ExprKind::Unary { .. } | ExprKind::Binary { .. } => is_const_int_expr(value),
+        _ => false,
+    }
+}
+
+fn is_const_int_expr(value: &Expr<'_>) -> bool {
+    match &value.kind {
+        ExprKind::Int(_) | ExprKind::Temporal(_) | ExprKind::DateLiteral(_) => true,
+        ExprKind::Call { name, args, .. } if matches!(name.as_str(), "int" | "temporal") && args.len() == 1 => {
+            args.iter().all(is_const_int_expr)
+        }
+        ExprKind::Unary { op: UnaryOp::Neg, expr } => is_const_int_expr(expr),
+        ExprKind::Binary { op: BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod, left, right } => {
+            is_const_int_expr(left) && is_const_int_expr(right)
+        }
         _ => false,
     }
 }
@@ -535,13 +564,23 @@ fn validate_contract_field_initializers<'i>(
     for constant in &contract.constants {
         types.insert(constant.name.clone(), constant.type_ref.clone());
     }
+    let mut constant_values = constants.clone();
 
     for field in &contract.fields {
+        let resolved = resolve_constant_references(field.expr.clone(), &constant_values, &mut HashSet::new())?;
+        if !is_const_expr(&resolved) {
+            return Err(CompilerError::Unsupported(format!(
+                "contract field '{}' initializer must be a constant expression",
+                field.name
+            ))
+            .with_span(&field.expr.span));
+        }
         let type_name = field.type_ref.type_name();
         ensure_array_elements_have_known_size(&field.type_ref, structs, constants, &type_name)?;
         validate_expr_matches_type(&field.expr, &field.type_ref, &types, structs, constants, &HashMap::new(), &contract.fields)
             .map_err(|_| CompilerError::Unsupported(format!("contract field '{}' expects {}", field.name, type_name)))?;
         types.insert(field.name.clone(), field.type_ref.clone());
+        constant_values.insert(field.name.clone(), resolved);
     }
 
     Ok(())
