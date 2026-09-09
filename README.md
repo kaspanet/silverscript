@@ -3,10 +3,6 @@
 
 Silverscript is a CashScript-inspired language and compiler that targets Kaspa script.
 
-**Status:** Experimental — the project is unstable and may introduce breaking changes without notice. Use with caution and expect language syntax, APIs and output formats to change.
-
-**Note:** It is recommended to only use the bytecode artifact on `testnet-10` for now, at least until first stable release (v1).
-
 ## Workspace
 
 This repository is a Rust workspace. The main crate is `silverscript-lang`.
@@ -16,6 +12,49 @@ This repository is a Rust workspace. The main crate is `silverscript-lang`.
 ```bash
 cargo test -p silverscript-lang
 ```
+
+## Running `silverc`
+
+Run the compiler from the workspace with Cargo:
+
+```bash
+cargo run -p silverscript-lang --bin silverc -- contract.sil
+```
+
+By default, `silverc` writes the compiled JSON artifact beside the source file as
+`contract.json`. Use `-o` to choose another output path, or `-c` to write the
+artifact to standard output:
+
+```bash
+cargo run -p silverscript-lang --bin silverc -- contract.sil -o artifact.json
+cargo run -p silverscript-lang --bin silverc -- contract.sil -c
+```
+
+For a contract such as `contract Limit(int limit)`, put its constructor arguments
+in a JSON array:
+
+```json
+[{ "kind": "int", "value": 100 }]
+```
+
+Then pass the file to `silverc`:
+
+```bash
+cargo run -p silverscript-lang --bin silverc -- \
+  contract.sil --constructor-args args.json
+```
+
+Constructor arguments are positional and use SilverScript's portable ABI JSON
+format. See [Constructor argument JSON](docs/CONSTRUCTOR_ARGS.md) for every
+supported value type and more examples.
+
+Use `--ast-only` to parse the source and emit AST JSON without compiling it:
+
+```bash
+cargo run -p silverscript-lang --bin silverc -- contract.sil --ast-only
+```
+
+Run with `--help` to see all available options.
 
 ## Debugger
 

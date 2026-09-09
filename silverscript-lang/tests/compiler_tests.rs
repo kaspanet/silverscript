@@ -408,7 +408,7 @@ fn portable_abi_verifies_struct_contract_field_state_layout() {
 
     let abi = compile_to_sil_abi_artifact(source, &args).expect("struct state contract compiles to a portable ABI");
 
-    abi.verify().expect("portable ABI runtime-state metadata matches the flattened state span");
+    abi.check_consistency().expect("portable ABI runtime-state metadata matches the flattened state span");
 }
 
 #[test]
@@ -421,7 +421,7 @@ fn portable_abi_verifies_and_executes_dynamic_string_state() {
     "#;
 
     let abi = compile_to_sil_abi_artifact(source, &["hello".into()]).expect("dynamic string state compiles");
-    abi.verify().expect("compiler output with dynamic string state verifies");
+    abi.check_consistency().expect("compiler output with dynamic string state verifies");
     let sigscript = encode_single_entry_sig_script(&abi, &[]).expect("sigscript builds");
 
     run_bytecode_with_sigscript(bytecode(&abi), sigscript).expect("verified dynamic string state executes");
@@ -7407,7 +7407,7 @@ fn silverscript_abi_encodes_and_runs_nested_struct_entry_arguments() {
     let artifact_constructor_args = [7.into()];
     let abi =
         compile_to_sil_abi_artifact(source, &artifact_constructor_args).expect("source compiles to a complete portable ABI artifact");
-    abi.verify().expect("portable ABI matches the compiled contract");
+    abi.check_consistency().expect("portable ABI matches the compiled contract");
 
     let coordinates = |x, y| {
         ArtifactValue::Object(BTreeMap::from([("x".to_string(), ArtifactValue::Int(x)), ("y".to_string(), ArtifactValue::Int(y))]))
@@ -7474,7 +7474,7 @@ fn artifact_values_compile_nested_constructor_arguments() {
     ];
 
     let abi = compile_to_sil_abi_artifact(source, &args).expect("portable ABI constructor values compile");
-    abi.verify().expect("portable ABI verifies");
+    abi.check_consistency().expect("portable ABI verifies");
     let contract = abi.contract("ArtifactConstructors").expect("contract exists");
     let bytecode = contract.compiled.bytecode.clone();
     let dispatch_tag = contract.entry("main").expect("entry exists").dispatch_tag.into_bytes();
