@@ -1158,3 +1158,26 @@ fn rejects_per_leader_delegate_policy_selection() {
         .expect_err("leaders cannot select delegate policies");
     assert!(err.to_string().contains("unknown covenant attribute argument 'delegate_policy'"), "unexpected error: {err}");
 }
+
+#[test]
+fn compiles_state_array_split_tuple_destructuring_in_covenant() {
+    let source = r#"
+        contract SplitTuple(int init_value) {
+            int value = init_value;
+            byte marker = 0x01;
+
+            #[covenant(binding = auth, from = 1, to = 3, mode = verification)]
+            function test(State prev_state, State[] new_states) {
+                require(new_states.length >= 2);
+
+                (State[] left, State[] right) = new_states.split(1);
+
+                require(left.length == 1);
+                require(right.length >= 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::int(1)], CompileOptions::default())
+        .expect("State[].split() tuple destructuring should compile in a covenant");
+}
