@@ -30,18 +30,63 @@ pub(super) fn lower_statements<'i>(
             } => {
                 scope.declare(left_name.clone(), left_type_ref.clone());
                 scope.declare(right_name.clone(), right_type_ref.clone());
-                lowered.push(Statement::TupleAssignment {
-                    left_type_ref: left_type_ref.clone(),
-                    left_name: left_name.clone(),
-                    right_type_ref: right_type_ref.clone(),
-                    right_name: right_name.clone(),
-                    expr: lower_scalar_expr(expr, scope, lowerer)?,
-                    span: *span,
-                    left_type_span: *left_type_span,
-                    left_name_span: *left_name_span,
-                    right_type_span: *right_type_span,
-                    right_name_span: *right_name_span,
-                });
+
+                if is_struct_array(left_type_ref, lowerer.structs)
+                    && is_struct_array(right_type_ref, lowerer.structs)
+                    && let ExprKind::Split { source, index, span: split_span, .. } = &expr.kind
+                {
+                    let sources = lower_struct_array_expr(source, left_type_ref, scope, lowerer)?;
+                    let left_bindings = flatten_named_type(left_name, left_type_ref, lowerer.structs)?;
+                    let right_bindings = flatten_named_type(right_name, right_type_ref, lowerer.structs)?;
+
+                    if sources.len() != left_bindings.len() || sources.len() != right_bindings.len() {
+                        return Err(CompilerError::Unsupported(
+                            "internal error: tuple split does not match struct-array layout".to_string(),
+                        ));
+                    }
+
+                    let lowered_index = lower_scalar_expr(index, scope, lowerer)?;
+
+                    for ((source, (left_name, left_type_ref)), (right_name, right_type_ref)) in
+                        sources.into_iter().zip(left_bindings).zip(right_bindings)
+                    {
+                        lowered.push(Statement::TupleAssignment {
+                            left_type_ref,
+                            left_name,
+                            right_type_ref,
+                            right_name,
+                            expr: Expr::new(
+                                ExprKind::Split {
+                                    source: Box::new(source),
+                                    index: Box::new(lowered_index.clone()),
+                                    // TupleAssignment compilation reconstructs both split parts;
+                                    // Left is the canonical placeholder stored on the expression.
+                                    part: SplitPart::Left,
+                                    span: *split_span,
+                                },
+                                expr.span,
+                            ),
+                            span: *span,
+                            left_type_span: *left_type_span,
+                            left_name_span: *left_name_span,
+                            right_type_span: *right_type_span,
+                            right_name_span: *right_name_span,
+                        });
+                    }
+                } else {
+                    lowered.push(Statement::TupleAssignment {
+                        left_type_ref: left_type_ref.clone(),
+                        left_name: left_name.clone(),
+                        right_type_ref: right_type_ref.clone(),
+                        right_name: right_name.clone(),
+                        expr: lower_scalar_expr(expr, scope, lowerer)?,
+                        span: *span,
+                        left_type_span: *left_type_span,
+                        left_name_span: *left_name_span,
+                        right_type_span: *right_type_span,
+                        right_name_span: *right_name_span,
+                    });
+                }
             }
             Statement::FunctionCall { name, args, span, name_span } => {
                 lowered.push(Statement::FunctionCall {
