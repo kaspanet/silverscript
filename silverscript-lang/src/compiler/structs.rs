@@ -32,8 +32,8 @@ use expr_lowering::{
 use layout::flatten_struct_fields;
 pub use layout::flattened_struct_name;
 pub(crate) use layout::{flatten_type_leaves, flattened_struct_field_specs_for_type};
-use scalar_expr::lower_scalar_expr;
 pub(crate) use scalar_expr::resolve_struct_access;
+use scalar_expr::{lower_scalar_expr, struct_array_expr_type};
 use schema::is_struct_like;
 pub(crate) use schema::{
     StructRegistry, build_struct_registry, ensure_known_type, ensure_known_type_without_struct_arrays, is_struct, is_struct_array,

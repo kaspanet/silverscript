@@ -2922,6 +2922,100 @@ fn compiles_struct_sugar_for_locals_calls_and_field_access() {
 }
 
 #[test]
+fn compiles_indexed_struct_array_literal_and_runs() {
+    let source = r#"
+        contract StructExpression() {
+            struct Item {
+                int value;
+                byte marker;
+            }
+
+            entry main() {
+                Item item = Item[]{
+                    Item {value: 7, marker: 0x01},
+                    Item {value: 8, marker: 0x02}
+                }[1];
+                require(item.value == 8);
+                require(item.marker == 0x02);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("indexed struct-array literal compiles");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    let result = run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag);
+    assert!(result.is_ok(), "indexed struct-array literal should execute successfully: {result:?}");
+}
+
+#[test]
+fn compiles_indexed_struct_array_issue_228_reproduction_and_runs() {
+    let source = r#"
+        contract StructExpression() {
+            struct Item {
+                int value;
+            }
+            entry main() {
+                Item item = Item[]{Item {value: 8}}[0];
+                require(item.value == 8);
+            }
+        }
+    "#;
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("issue 228 reproduction compiles");
+    let result = run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag_for(&compiled, "main"));
+    assert!(result.is_ok(), "issue 228 reproduction should execute successfully: {result:?}");
+}
+
+#[test]
+fn compiles_indexed_struct_array_operations_and_runs() {
+    // Direct indexing of a split projection is currently rejected by the parser.
+    // Compose it with slice to exercise split lowering through a supported source.
+    for (expression, value, marker) in [
+        ("items[1]", 8, "0x02"),
+        ("items.append(Item {value: 9, marker: 0x03})[2]", 9, "0x03"),
+        ("items.slice(1, 2)[0]", 8, "0x02"),
+        ("items.split(1).0.slice(0, 1)[0]", 7, "0x01"),
+        ("items.split(1).1.slice(0, 1)[0]", 8, "0x02"),
+    ] {
+        let source = format!(
+            r#"
+            contract StructExpression() {{
+                struct Item {{
+                    int value;
+                    byte marker;
+                }}
+                entry main() {{
+                    Item[] items = Item[]{{Item {{value: 7, marker: 0x01}}, Item {{value: 8, marker: 0x02}}}};
+                    Item item = {expression};
+                    require(item.value == {value});
+                    require(item.marker == {marker});
+                }}
+            }}
+            "#
+        );
+        let compiled = compile_contract(&source, &[], CompileOptions::default())
+            .unwrap_or_else(|err| panic!("{expression} should compile: {err}"));
+        let result = run_bytecode_with_dispatch_tag(bytecode(&compiled), dispatch_tag_for(&compiled, "main"));
+        assert!(result.is_ok(), "{expression} should execute successfully: {result:?}");
+    }
+}
+
+#[test]
+fn rejects_indexed_struct_array_type_mismatch() {
+    let source = r#"
+        contract StructExpression() {
+            struct Item { int value; }
+            struct Other { int value; }
+            entry main() {
+                Item item = Other[]{Other {value: 8}}[0];
+                require(item.value == 8);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("different struct types must be rejected");
+    assert!(err.to_string().contains("variable 'item' expects Item"), "unexpected error: {err}");
+}
+
+#[test]
 fn compiles_struct_return_types_in_inline_calls() {
     let source = r#"
         contract C() {
