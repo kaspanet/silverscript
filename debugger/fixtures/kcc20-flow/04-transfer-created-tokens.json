@@ -1,0 +1,89 @@
+{
+  "name": "KCC20 flow 04 - transfer created non-minter tokens",
+  "type": "silverscript",
+  "request": "launch",
+  "scriptPath": "silverscript-lang/tests/examples/kcc20.sil",
+  "function": "transfer",
+  "constructorArgs": [
+    "0x2222222222222222222222222222222222222222222222222222222222222222",
+    100,
+    2,
+    false,
+    2,
+    2
+  ],
+  "args": [
+    [
+      {
+        "ownerIdentifier": "0x3333333333333333333333333333333333333333333333333333333333333333",
+        "identifierType": 2,
+        "amount": 100,
+        "isMinter": false
+      }
+    ],
+    [],
+    [1]
+  ],
+  "tx": {
+    "active_input_index": 0,
+    "inputs": [
+      {
+        "utxo_value": 1000,
+        "covenant_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "constructor_args": [
+          "0x2222222222222222222222222222222222222222222222222222222222222222",
+          100,
+          2,
+          false,
+          2,
+          2
+        ],
+        "state": {
+          "ownerIdentifier": "0x2222222222222222222222222222222222222222222222222222222222222222",
+          "identifierType": 2,
+          "amount": 100,
+          "isMinter": false
+        }
+      },
+      {
+        "utxo_value": 1000,
+        "covenant_id": "0x2222222222222222222222222222222222222222222222222222222222222222",
+        "constructor_args": [
+          "0x2222222222222222222222222222222222222222222222222222222222222222",
+          0,
+          2,
+          true,
+          2,
+          2
+        ],
+        "state": {
+          "ownerIdentifier": "0x2222222222222222222222222222222222222222222222222222222222222222",
+          "identifierType": 2,
+          "amount": 0,
+          "isMinter": true
+        }
+      }
+    ],
+    "outputs": [
+      {
+        "value": 1000,
+        "covenant_id": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "authorizing_input": 0,
+        "constructor_args": [
+          "0x3333333333333333333333333333333333333333333333333333333333333333",
+          100,
+          2,
+          false,
+          2,
+          2
+        ],
+        "state": {
+          "ownerIdentifier": "0x3333333333333333333333333333333333333333333333333333333333333333",
+          "identifierType": 2,
+          "amount": 100,
+          "isMinter": false
+        }
+      }
+    ]
+  }
+}
