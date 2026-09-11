@@ -1181,3 +1181,31 @@ fn compiles_state_array_split_tuple_destructuring_in_covenant() {
     compile_contract(source, &[Expr::int(1)], CompileOptions::default())
         .expect("State[].split() tuple destructuring should compile in a covenant");
 }
+
+#[test]
+fn compiles_state_array_split_tuple_destructuring_in_inlined_helper() {
+    let source = r#"
+        contract SplitTupleHelper(int init_value) {
+            int value = init_value;
+            byte marker = 0x01;
+
+            function split_pair(State[] states, int index): (State[], State[]) {
+                (State[] left, State[] right) = states.split(index);
+                return(left, right);
+            }
+
+            #[covenant(binding = auth, from = 1, to = 3, mode = verification)]
+            function test(State prev_state, State[] new_states) {
+                require(new_states.length >= 2);
+
+                (State[] left, State[] right) = split_pair(new_states, 1);
+
+                require(left.length == 1);
+                require(right.length >= 1);
+            }
+        }
+    "#;
+
+    compile_contract(source, &[Expr::int(1)], CompileOptions::default())
+        .expect("State[].split() tuple destructuring should compile through an inlined helper");
+}

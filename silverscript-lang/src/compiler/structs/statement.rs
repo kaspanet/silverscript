@@ -59,6 +59,8 @@ pub(super) fn lower_statements<'i>(
                                 ExprKind::Split {
                                     source: Box::new(source),
                                     index: Box::new(lowered_index.clone()),
+                                    // TupleAssignment compilation reconstructs both split parts;
+                                    // Left is the canonical placeholder stored on the expression.
                                     part: SplitPart::Left,
                                     span: *split_span,
                                 },
