@@ -26,7 +26,7 @@ macro_rules! impl_checked_arithmetic {
     };
 }
 
-impl_checked_arithmetic!(i64, i128, usize);
+impl_checked_arithmetic!(i64, i128, u64, usize);
 
 pub(crate) trait CheckedNeg: Copy + Display {
     fn checked_neg_value(self) -> Option<Self>;

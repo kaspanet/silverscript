@@ -11,6 +11,7 @@ pub(crate) use crate::checked_arithmetic::{checked_add, checked_div, checked_mul
 use crate::debug_info::{DebugInfo, DebugNamedValue};
 pub use crate::errors::{CompilerError, ErrorSpan};
 use crate::span;
+use silverscript_abi::ComputeEstimateArtifact;
 mod abi;
 mod array_append;
 mod builtin_types;
@@ -117,6 +118,10 @@ pub struct CompiledContract<'i> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delegate_entrypoint: Option<String>,
     pub state_layout: CompiledStateLayout,
+    /// A static bound of the script units each entrypoint charges, keyed by
+    /// entrypoint name; None for an entrypoint whose cost could not be bounded.
+    #[serde(default)]
+    pub compute_estimates: BTreeMap<String, Option<ComputeEstimateArtifact>>,
     pub debug_info: Option<DebugInfo<'i>>,
 }
 

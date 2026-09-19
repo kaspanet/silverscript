@@ -1,3 +1,4 @@
+use super::super::linear::Linear;
 use super::*;
 
 #[test]
@@ -26,7 +27,7 @@ fn checked_stack_constructor_and_transfers_respect_combined_limit() {
     }
     // Replacing operands at the limit does not require extra room.
     let mut stack = Stack::new(243, 1, &at).unwrap();
-    stack.apply_effect(2, 1, &at).unwrap();
+    stack.apply_effect(2, vec![Value::Unknown], &at).unwrap();
     stack.push(Value::number(7), &at).unwrap();
     assert_eq!(stack.main.len() + stack.alt.len(), 244);
 }
@@ -56,7 +57,8 @@ const AT: Location<'static> = Location { function: "stack_tests", offset: 123 };
 
 fn with_values(main: &[i64], alt: &[i64]) -> Stack {
     assert!(main.len() + alt.len() <= MAX_STACK_SIZE);
-    Stack { main: main.iter().copied().map(Value::number).collect(), alt: alt.iter().copied().map(Value::number).collect() }
+    Stack::from_values(main.iter().copied().map(Value::number).collect(), alt.iter().copied().map(Value::number).collect(), &AT)
+        .unwrap()
 }
 
 fn assert_analysis_error(error: CompilerError) {
@@ -119,9 +121,7 @@ fn huge_counts_and_depths_return_errors_without_allocating_or_panicking() {
     assert_analysis_error(stack.rotate_left(usize::MAX, 0, &AT).unwrap_err());
     assert_analysis_error(stack.rotate_left(1, usize::MAX, &AT).unwrap_err());
     assert_analysis_error(stack.drop_items(usize::MAX, &AT).unwrap_err());
-    assert_analysis_error(stack.apply_effect(usize::MAX, 0, &AT).unwrap_err());
-    assert_eq!(stack, before);
-    assert!(matches!(stack.apply_effect(0, usize::MAX, &AT), Err(CompilerError::ArithmeticOverflow(_))));
+    assert_analysis_error(stack.apply_effect(usize::MAX, Vec::new(), &AT).unwrap_err());
     assert_eq!(stack, before);
 }
 
@@ -159,7 +159,7 @@ fn push_pop_and_peek_preserve_exact_values_and_lifo_order() {
         assert_eq!(&stack.pop(&AT).unwrap(), value);
     }
     assert_analysis_error(stack.pop(&AT).unwrap_err());
-    assert_eq!(stack, with_values(&[], &[50, 60]));
+    assert_eq!(stack.values(), with_values(&[], &[50, 60]).values());
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn pop_count_accepts_script_number_encodings() {
         let mut stack = with_values(&[42], &[50]);
         stack.push(Value::Bytes(bytes), &AT).unwrap();
         assert_eq!(stack.pop_count(&AT).unwrap(), expected);
-        assert_eq!(stack, with_values(&[42], &[50]));
+        assert_eq!(stack.values(), with_values(&[42], &[50]).values());
     }
     let mut stack = with_values(&[], &[]);
     stack.push(Value::Bytes(vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]), &AT).unwrap();
@@ -236,11 +236,11 @@ fn insert_places_values_above_below_and_between_existing_items() {
     ] {
         let mut stack = with_values(&[10, 20, 30, 40], &[50, 60]);
         stack.insert(depth, Value::number(99), &AT).unwrap();
-        assert_eq!(stack, with_values(&expected, &[50, 60]));
+        assert_eq!(stack.values(), with_values(&expected, &[50, 60]).values());
     }
     let mut empty = with_values(&[], &[50]);
     empty.insert(0, Value::number(99), &AT).unwrap();
-    assert_eq!(empty, with_values(&[99], &[50]));
+    assert_eq!(empty.values(), with_values(&[99], &[50]).values());
 }
 
 #[test]
@@ -271,7 +271,7 @@ fn extend_from_within_copies_the_selected_block_in_original_order() {
     ] {
         let mut stack = with_values(&[10, 20, 30, 40], &[50, 60]);
         stack.extend_from_within(depth, count, &AT).unwrap();
-        assert_eq!(stack, with_values(&expected, &[50, 60]));
+        assert_eq!(stack.values(), with_values(&expected, &[50, 60]).values());
     }
     let mut stack = with_values(&[], &[50]);
     stack.extend_from_within(0, 0, &AT).unwrap();
@@ -347,7 +347,8 @@ fn drop_items_removes_only_the_requested_top_items() {
 }
 
 #[test]
-fn apply_effect_preserves_lower_operands_and_pushes_unknown_results() {
+fn apply_effect_preserves_lower_operands_and_pushes_results() {
+    let unknowns = |count| vec![Value::Unknown; count];
     for (pops, pushes, expected) in [
         (0, 0, vec![Value::number(10), Value::number(20), Value::number(30), Value::number(40)]),
         (2, 3, vec![Value::number(10), Value::number(20), Value::Unknown, Value::Unknown, Value::Unknown]),
@@ -355,31 +356,32 @@ fn apply_effect_preserves_lower_operands_and_pushes_unknown_results() {
         (4, 2, vec![Value::Unknown, Value::Unknown]),
     ] {
         let mut stack = with_values(&[10, 20, 30, 40], &[50, 60]);
-        stack.apply_effect(pops, pushes, &AT).unwrap();
+        stack.apply_effect(pops, unknowns(pushes), &AT).unwrap();
         assert_eq!(stack.main, expected);
         assert_eq!(stack.alt, with_values(&[], &[50, 60]).alt);
     }
     let mut stack = with_values(&[], &[50]);
-    stack.apply_effect(0, 2, &AT).unwrap();
+    stack.apply_effect(0, unknowns(2), &AT).unwrap();
     assert_eq!(stack.main, vec![Value::Unknown, Value::Unknown]);
     assert_eq!(stack.alt, vec![Value::number(50)]);
 }
 
 #[test]
 fn apply_effect_checks_net_capacity_and_rejects_missing_operands() {
+    let unknowns = |count| vec![Value::Unknown; count];
     let mut full = Stack::new(4, MAX_STACK_SIZE - 4, &AT).unwrap();
-    full.apply_effect(3, 3, &AT).unwrap();
+    full.apply_effect(3, unknowns(3), &AT).unwrap();
     assert_eq!(full.main_len() + full.alt_len(), MAX_STACK_SIZE);
-    full.apply_effect(3, 2, &AT).unwrap();
-    full.apply_effect(0, 1, &AT).unwrap();
+    full.apply_effect(3, unknowns(2), &AT).unwrap();
+    full.apply_effect(0, unknowns(1), &AT).unwrap();
     assert_eq!(full.main_len() + full.alt_len(), MAX_STACK_SIZE);
-    assert_limit_error(full.apply_effect(2, 3, &AT).unwrap_err(), MAX_STACK_SIZE + 1);
+    assert_limit_error(full.apply_effect(2, unknowns(3), &AT).unwrap_err(), MAX_STACK_SIZE + 1);
     // Failure may consume operands, but must never leave an oversized stack.
     assert!(full.main_len() + full.alt_len() <= MAX_STACK_SIZE);
     assert_eq!(full.alt_len(), MAX_STACK_SIZE - 4);
     let mut stack = with_values(&[10], &[50, 60]);
     let before = stack.clone();
-    assert_analysis_error(stack.apply_effect(2, 0, &AT).unwrap_err());
+    assert_analysis_error(stack.apply_effect(2, Vec::new(), &AT).unwrap_err());
     assert_eq!(stack, before);
 }
 
@@ -418,18 +420,25 @@ fn join_handles_all_combinations_of_terminated_paths() {
 
 #[test]
 fn join_preserves_only_identical_values_on_both_stacks() {
-    let left = Stack {
-        main: vec![Value::number(1), Value::number(2), Value::Unknown, Value::Bytes(vec![])],
-        alt: vec![Value::number(8), Value::Unknown],
-    };
-    let right = Stack {
-        main: vec![Value::number(1), Value::number(3), Value::number(4), Value::Bytes(vec![0])],
-        alt: vec![Value::number(8), Value::number(7)],
-    };
-    let expected = Stack {
-        main: vec![Value::number(1), Value::Unknown, Value::Unknown, Value::Unknown],
-        alt: vec![Value::number(8), Value::Unknown],
-    };
+    let left = Stack::from_values(
+        vec![Value::number(1), Value::number(2), Value::Unknown, Value::Bytes(vec![])],
+        vec![Value::number(8), Value::Unknown],
+        &AT,
+    )
+    .unwrap();
+    let right = Stack::from_values(
+        vec![Value::number(1), Value::number(3), Value::number(4), Value::Bytes(vec![0])],
+        vec![Value::number(8), Value::number(7)],
+        &AT,
+    )
+    .unwrap();
+    // Differing values keep the larger length bound; unbounded values stay unbounded.
+    let expected = Stack::from_values(
+        vec![Value::number(1), Value::bounded(Linear::constant(1)), Value::Unknown, Value::bounded(Linear::constant(1))],
+        vec![Value::number(8), Value::Unknown],
+        &AT,
+    )
+    .unwrap();
     assert_eq!(Stack::join(Some(left), Some(right), &AT).unwrap(), Some(expected));
     // Zero encodings are numerically equivalent but distinct byte values.
 }
@@ -451,8 +460,10 @@ fn join_requires_each_stack_height_to_match_not_just_the_total() {
 #[test]
 fn join_is_idempotent_commutative_and_associative() {
     let values = [Value::Unknown, Value::number(0), Value::number(1)];
-    let states: Vec<Stack> =
-        values.iter().flat_map(|a| values.iter().map(move |b| Stack { main: vec![a.clone()], alt: vec![b.clone()] })).collect();
+    let states: Vec<Stack> = values
+        .iter()
+        .flat_map(|a| values.iter().map(move |b| Stack::from_values(vec![a.clone()], vec![b.clone()], &AT).unwrap()))
+        .collect();
     let merge = |a: &Stack, b: &Stack| Stack::join(Some(a.clone()), Some(b.clone()), &AT).unwrap().unwrap();
     for a in &states {
         assert_eq!(merge(a, a), *a);
@@ -534,7 +545,7 @@ fn mixed_operations_match_an_independent_top_first_deque_model() {
                 8 => {
                     let pops = draw(main.len() + 1);
                     let pushes = draw((32 - main.len() - alt.len() + pops).min(3) + 1);
-                    stack.apply_effect(pops, pushes, &AT).unwrap();
+                    stack.apply_effect(pops, vec![Value::Unknown; pushes], &AT).unwrap();
                     for _ in 0..pops {
                         main.pop_front();
                     }

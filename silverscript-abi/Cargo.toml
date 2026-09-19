@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 blake3 = { workspace = true }
 faster-hex = { workspace = true }
+kaspa-consensus-core = { workspace = true }
 kaspa-txscript = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
@@ -15,6 +16,5 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-kaspa-consensus-core = { workspace = true }
 # Keep the Sil compiler test-only; production ABI code must not depend on it.
 silverscript-lang = { workspace = true }

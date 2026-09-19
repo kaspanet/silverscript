@@ -13,8 +13,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use blake3::Hasher as Blake3Hasher;
+use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::mass::{ComputeBudget, ScriptUnits};
+use kaspa_consensus_core::tx::PopulatedTransaction;
+use kaspa_txscript::caches::Cache;
 use kaspa_txscript::{
-    EngineFlags, deserialize_i64 as deserialize_script_i64,
+    EngineFlags, TxScriptEngine, deserialize_i64 as deserialize_script_i64,
     opcodes::codes::{
         Op0 as OP_0, Op1 as OP_1, Op1Negate as OP_1_NEGATE, Op16 as OP_16, OpData1 as OP_DATA_1, OpData75 as OP_DATA_75,
         OpPushData1 as OP_PUSH_DATA_1, OpPushData2 as OP_PUSH_DATA_2, OpPushData4 as OP_PUSH_DATA_4,
@@ -283,6 +287,87 @@ pub struct RuntimeFieldArtifact {
 pub struct SilEntryArtifact {
     pub dispatch_tag: DispatchTag,
     pub params: Vec<ParamArtifact>,
+    /// A static bound of the script units this entry charges, when the compiler
+    /// could bound them. Absent from artifacts of older compilers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<ComputeEstimateArtifact>,
+}
+
+/// A static upper bound of the script units the Kaspa script engine meters
+/// while an entry runs, so a spender can commit an input's compute budget
+/// without submitting a transaction first.
+///
+/// The bound is `script_units + Σ script_units_per_byte[key] × length(key)`.
+/// Each key names a runtime byte length the compiler cannot know:
+///
+/// - a variable-length argument, by its parameter name (`seal`), or by its leaf
+///   path for a struct or struct-array parameter (`point.tag`), counting the
+///   bytes of its signature-script push;
+/// - a variable-length state field, as `state.<name>` (with the same leaf
+///   paths), counting the bytes of its element in the redeem script;
+/// - `redeem_script`, the byte length of the redeem script the spender pushes
+///   (the contract bytecode with its current state), which the
+///   pay-to-script-hash output script hashes before the redeem script runs;
+/// - a transaction field read through introspection: `tx.payload`,
+///   `tx.inputs[<i>].signature_script`, `tx.inputs[<i>].script_public_key`, or
+///   `tx.outputs[<i>].script_public_key`, where script public keys count their
+///   two-byte version prefix and `<i>` is a literal index,
+///   `this.activeInputIndex`, or `*` when the index is only known at runtime.
+///   Evaluate a `*` term with the largest such length in the transaction.
+///
+/// The bound covers the most expensive path through the entry, prices
+/// signature operations at mainnet's rate, and assumes the spent output is a
+/// standard pay-to-script-hash script. Copies, concatenations, splits at known
+/// offsets, hashes, and verifications are tracked exactly; comparison and
+/// arithmetic results, and the encoded size of a variable length, are rounded
+/// up to their largest encoding, so the bound exceeds the metered units by at
+/// most a few units per such operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputeEstimateArtifact {
+    /// Script units charged regardless of the variable lengths.
+    pub script_units: u64,
+    /// Additional script units per byte of each variable length, keyed as described above.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub script_units_per_byte: BTreeMap<String, u64>,
+    /// Signature operations on the most expensive path. Their units are already
+    /// included in `script_units`; a consumer can re-price them for a network
+    /// whose `mass_per_sig_op` differs from mainnet's.
+    pub sig_ops: u64,
+}
+
+impl ComputeEstimateArtifact {
+    /// Evaluate the bound. `length` supplies the byte length for each key of
+    /// `script_units_per_byte`; see [`entry_argument_byte_lengths`] for the
+    /// argument keys.
+    pub fn script_units_with(&self, length: impl Fn(&str) -> Option<u64>) -> Result<u64, ComputeEstimateError> {
+        let mut total = self.script_units;
+        for (key, per_byte) in &self.script_units_per_byte {
+            let len = length(key).ok_or_else(|| ComputeEstimateError::MissingLength(key.clone()))?;
+            total = per_byte.checked_mul(len).and_then(|units| total.checked_add(units)).ok_or(ComputeEstimateError::Overflow)?;
+        }
+        Ok(total)
+    }
+
+    /// The smallest compute budget an input can commit to cover the bound.
+    pub fn compute_budget_with(&self, length: impl Fn(&str) -> Option<u64>) -> Result<u16, ComputeEstimateError> {
+        compute_budget_for_script_units(self.script_units_with(length)?).ok_or(ComputeEstimateError::BudgetOverflow)
+    }
+}
+
+/// The smallest compute budget whose allowed script units cover `script_units`,
+/// including the engine's free per-input allowance, or None if no budget can.
+pub fn compute_budget_for_script_units(script_units: u64) -> Option<u16> {
+    ComputeBudget::checked_covering_script_units(ScriptUnits(script_units)).map(u16::from)
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum ComputeEstimateError {
+    #[error("no byte length was supplied for `{0}`")]
+    MissingLength(String),
+    #[error("script unit total overflows")]
+    Overflow,
+    #[error("required script units exceed the largest compute budget")]
+    BudgetOverflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +598,75 @@ pub fn encode_entry_sig_script(
         return Err(CodecError::SignatureScriptTooLarge { actual, maximum: MAX_SIGNATURE_SCRIPT_LEN });
     }
     Ok(builder.drain())
+}
+
+/// The byte length of every signature-script push `encode_entry_sig_script`
+/// makes for `args`, keyed the way [`ComputeEstimateArtifact`] keys arguments:
+/// the parameter name, extended by the field path for struct and struct-array
+/// parameters. Fixed-size parameters are included for completeness.
+pub fn entry_argument_byte_lengths(
+    abi: &SilAbiArtifact,
+    contract: &SilContractArtifact,
+    entry: &SilEntryArtifact,
+    args: &[ArtifactValue],
+) -> CodecResult<BTreeMap<String, u64>> {
+    let params = entry_params(entry);
+    if params.len() != args.len() {
+        return Err(CodecError::WrongArgumentCount { entry: "<entry>".to_string(), expected: params.len(), actual: args.len() });
+    }
+    let ctx = TypeContext::new(abi, contract);
+    let mut lengths = BTreeMap::new();
+    for ((name, ty), value) in params.iter().zip(args) {
+        let mut builder = script_builder();
+        push_sig_arg(&mut builder, &ctx, name, ty, value)?;
+        let mut leaves = Vec::new();
+        argument_leaf_names(&ctx, name, ty, &mut leaves)?;
+        let pushed = pushed_element_lengths(&builder.drain())?;
+        if pushed.len() != leaves.len() {
+            return Err(CodecError::InvalidPush(format!(
+                "argument `{name}` encodes {} pushes for {} leaves",
+                pushed.len(),
+                leaves.len()
+            )));
+        }
+        lengths.extend(leaves.into_iter().zip(pushed));
+    }
+    Ok(lengths)
+}
+
+/// The keys of the stack items `push_sig_arg` produces for one parameter, in
+/// push order: struct fields recurse with `.` separated paths, and struct
+/// arrays push one array per field.
+fn argument_leaf_names(ctx: &TypeContext<'_>, prefix: &str, ty: &TypeArtifact, out: &mut Vec<String>) -> CodecResult<()> {
+    match ty {
+        TypeArtifact::Struct { name } => {
+            for field in &ctx.struct_by_name(name)?.fields {
+                argument_leaf_names(ctx, &format!("{prefix}.{}", field.name), &field.ty, out)?;
+            }
+        }
+        TypeArtifact::FixedArray { item, .. } | TypeArtifact::DynamicArray { item }
+            if matches!(item.as_ref(), TypeArtifact::Struct { .. }) =>
+        {
+            let TypeArtifact::Struct { name } = item.as_ref() else { unreachable!("matched a struct item") };
+            for field in &ctx.struct_by_name(name)?.fields {
+                let column = TypeArtifact::DynamicArray { item: Box::new(field.ty.clone()) };
+                argument_leaf_names(ctx, &format!("{prefix}.{}", field.name), &column, out)?;
+            }
+        }
+        _ => out.push(prefix.to_string()),
+    }
+    Ok(())
+}
+
+/// The byte lengths of the stack items a push-only script leaves, in push order.
+fn pushed_element_lengths(script: &[u8]) -> CodecResult<Vec<u64>> {
+    let reused = SigHashReusedValuesUnsync::new();
+    let cache = Cache::new(0);
+    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let stacks = TxScriptEngine::<PopulatedTransaction<'_>, SigHashReusedValuesUnsync>::from_script(script, &reused, &cache, flags)
+        .execute_and_return_stacks()
+        .map_err(|err| CodecError::InvalidPush(err.to_string()))?;
+    Ok(stacks.dstack.iter().map(|item| item.len() as u64).collect())
 }
 
 pub fn encode_runtime_state_script(
@@ -1804,11 +1958,16 @@ mod tests {
                                     param("flag", TypeArtifact::Bool),
                                     param("b", TypeArtifact::Byte),
                                 ],
+                                compute: None,
                             },
                         ),
                         (
                             "other".to_string(),
-                            SilEntryArtifact { dispatch_tag: DispatchTag::from([0xde, 0xad, 0xbe, 0xef]), params: Vec::new() },
+                            SilEntryArtifact {
+                                dispatch_tag: DispatchTag::from([0xde, 0xad, 0xbe, 0xef]),
+                                params: Vec::new(),
+                                compute: None,
+                            },
                         ),
                     ]),
                     cov_decl_to_abi: BTreeMap::new(),
