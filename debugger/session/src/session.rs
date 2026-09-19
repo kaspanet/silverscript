@@ -485,6 +485,12 @@ impl<'a, 'i> DebugSession<'a, 'i> {
         std::mem::take(&mut self.console_output)
     }
 
+    /// The script units the engine has metered so far. After a completed run
+    /// this is the exact amount the input's compute budget must cover.
+    pub fn used_script_units(&self) -> u64 {
+        self.engine.used_script_units().0
+    }
+
     pub fn debug_info(&self) -> &DebugInfo<'i> {
         &self.debug_info
     }

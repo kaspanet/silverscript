@@ -179,7 +179,8 @@ fn contract_artifact_from_compiled<'i>(
                 .iter()
                 .map(|param| Ok(ParamArtifact { name: param.name.clone(), ty: type_artifact(&param.type_ref, &constants)? }))
                 .collect::<Result<Vec<_>, CompilerError>>()?;
-            Ok((function.name.clone(), SilEntryArtifact { dispatch_tag: dispatch_tag.into(), params }))
+            let compute = compiled.compute_estimates.get(&function.name).cloned().flatten();
+            Ok((function.name.clone(), SilEntryArtifact { dispatch_tag: dispatch_tag.into(), params, compute }))
         })
         .collect::<Result<BTreeMap<_, _>, CompilerError>>()?;
     let artifact_entry = |entry_name: &str| {

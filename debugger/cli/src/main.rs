@@ -448,6 +448,16 @@ fn show_step_view(session: &DebugSession<'_, '_>, console_lines: &[String]) {
     print_console_section(console_lines);
 }
 
+/// Report what a completed run cost, so the input's compute budget can be
+/// committed without a trial submission.
+fn print_metered_units(session: &DebugSession<'_, '_>) {
+    let units = session.used_script_units();
+    match silverscript_abi::compute_budget_for_script_units(units) {
+        Some(budget) => println!("script units: {units} (computeBudget >= {budget})"),
+        None => println!("script units: {units} (exceeds the largest computeBudget)"),
+    }
+}
+
 fn print_failure(session: &DebugSession<'_, '_>, err: kaspa_txscript_errors::TxScriptError) {
     let report = session.build_failure_report(&err);
     let formatted = format_failure_report(&report, &format_value);
@@ -996,6 +1006,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Ok(()) => {
                 print_console_messages(&session.take_console_output());
+                print_metered_units(&session);
                 println!("PASS");
                 Ok(())
             }

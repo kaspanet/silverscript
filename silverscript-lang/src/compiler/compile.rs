@@ -30,6 +30,7 @@ use emitter::*;
 use expression::*;
 pub(super) use helpers::encode_array_literal;
 use helpers::*;
+use stack_analysis::{EntrypointInputs, Value};
 use state::*;
 pub(super) use state::{encoded_state_len_for_layout_field_types, encoded_type_chunk_size, read_input_state_field_expr_symbolic};
 use statement::*;
@@ -100,19 +101,21 @@ pub(super) fn compile_contract_impl<'i>(
     }
 
     let uses_bytecode_size = contract_uses_bytecode_size(&lowered_contract);
+    let entrypoint_inputs = entrypoint_inputs(&lowered_contract, &covenant_lowered_contract, &structs, &lowered_constants)?;
 
     let mut bytecode_size = if uses_bytecode_size { Some(100i64) } else { None };
 
     for _ in 0..32 {
         debug_recorder.record_contract_scope(&inline_lowered_contract, constructor_args, &structs)?;
 
-        let (bytecode, state_layout) = compile_contract_bytecode_iteration(
+        let (bytecode, state_layout, compute_estimates) = compile_contract_bytecode_iteration(
             &lowered_contract,
             &lowered_constants,
             bytecode_size,
             &dispatches,
             &structs,
             &struct_array_param_groups,
+            &entrypoint_inputs,
             &mut debug_recorder,
         )?;
 
@@ -126,6 +129,7 @@ pub(super) fn compile_contract_impl<'i>(
                 delegate_entrypoint.as_deref(),
                 bytecode,
                 state_layout,
+                compute_estimates,
                 debug_info,
             ));
         }
@@ -140,6 +144,7 @@ pub(super) fn compile_contract_impl<'i>(
                 delegate_entrypoint.as_deref(),
                 bytecode,
                 state_layout,
+                compute_estimates,
                 debug_info,
             ));
         }
@@ -279,6 +284,84 @@ fn maximum_canonical_data_push_size(payload_size: usize) -> Result<usize, Compil
     checked_add(payload_size, prefix_size)
 }
 
+/// The stack values each entrypoint body starts from. Fixed-size arguments and
+/// fields carry their encoded size; variable-length ones carry a length symbol
+/// named after the source-level parameter or `state.<field>`, using the leaf
+/// path of a struct (`point.tag`), as the ABI artifact keys them.
+fn entrypoint_inputs<'i>(
+    lowered_contract: &ContractAst<'i>,
+    source_contract: &ContractAst<'i>,
+    structs: &StructRegistry,
+    constants: &HashMap<String, Expr<'i>>,
+) -> Result<BTreeMap<String, EntrypointInputs>, CompilerError> {
+    let mut state_names = HashMap::new();
+    for field in &source_contract.fields {
+        for (lowered, display) in leaf_display_names(&field.name, &field.type_ref, structs)? {
+            state_names.insert(lowered, format!("state.{display}"));
+        }
+    }
+    let state = lowered_contract
+        .fields
+        .iter()
+        .map(|field| input_value(&field.type_ref, constants, state_names.get(&field.name).unwrap_or(&field.name)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut inputs = BTreeMap::new();
+    for function in lowered_contract.functions.iter().filter(|function| function.entrypoint) {
+        let mut param_names = HashMap::new();
+        if let Some(source) = source_contract.functions.iter().find(|source| source.name == function.name) {
+            for param in &source.params {
+                param_names.extend(leaf_display_names(&param.name, &param.type_ref, structs)?);
+            }
+        }
+        let params = function
+            .params
+            .iter()
+            .map(|param| input_value(&param.type_ref, constants, param_names.get(&param.name).unwrap_or(&param.name)))
+            .collect::<Result<Vec<_>, _>>()?;
+        inputs.insert(function.name.clone(), EntrypointInputs { params, state: state.clone() });
+    }
+    Ok(inputs)
+}
+
+/// Map the lowered name of every stack slot a declaration occupies to its
+/// display name: the declaration's name, extended by `.field` per struct level.
+fn leaf_display_names(name: &str, type_ref: &TypeRef, structs: &StructRegistry) -> Result<Vec<(String, String)>, CompilerError> {
+    if !is_struct(type_ref, structs) && !is_struct_array(type_ref, structs) {
+        return Ok(vec![(name.to_string(), name.to_string())]);
+    }
+    Ok(flatten_type_leaves(type_ref, structs)?
+        .into_iter()
+        .map(|leaf| {
+            let mut display = name.to_string();
+            for part in &leaf.path {
+                display.push('.');
+                display.push_str(part);
+            }
+            (flattened_struct_name(name, &leaf.path), display)
+        })
+        .collect())
+}
+
+/// The analyzer's view of one argument or state field: its exact encoded
+/// size, an upper bound for minimally encoded numbers and booleans, or a
+/// named length symbol for variable-length values.
+fn input_value<'i>(type_ref: &TypeRef, constants: &HashMap<String, Expr<'i>>, display: &str) -> Result<Value, CompilerError> {
+    match fixed_type_size(type_ref, constants)? {
+        Some(size) => {
+            let minimal = !type_ref.is_array() && matches!(type_ref.base, TypeBase::Int | TypeBase::Temporal | TypeBase::Bool);
+            Ok(Value::fixed(size as u64, !minimal))
+        }
+        None => match type_ref.base {
+            TypeBase::Tuple(_) | TypeBase::Custom(_) => Ok(Value::Unknown),
+            _ => Ok(Value::named_length(display.to_string())),
+        },
+    }
+}
+
+/// A static bound of the script units each entrypoint charges, keyed by name.
+type ComputeEstimates = BTreeMap<String, Option<ComputeEstimateArtifact>>;
+
 fn compile_contract_bytecode_iteration<'i>(
     lowered_contract: &ContractAst<'i>,
     lowered_constants: &HashMap<String, Expr<'i>>,
@@ -286,8 +369,9 @@ fn compile_contract_bytecode_iteration<'i>(
     dispatches: &[EntrypointDispatch],
     structs: &StructRegistry,
     struct_array_param_groups: &StructArrayParamGroups,
+    entrypoint_inputs: &BTreeMap<String, EntrypointInputs>,
     debug_recorder: &mut DebugRecorder<'i>,
-) -> Result<(Vec<u8>, CompiledStateLayout), CompilerError> {
+) -> Result<(Vec<u8>, CompiledStateLayout, ComputeEstimates), CompilerError> {
     let (_contract_fields, state_push_bytecode) = compile_contract_fields(&lowered_contract.fields, lowered_constants)?;
 
     let state_start: usize = if state_push_bytecode.is_empty() {
@@ -310,13 +394,9 @@ fn compile_contract_bytecode_iteration<'i>(
     let entrypoints = lowered_contract.functions.iter().filter(|function| function.entrypoint).collect::<Vec<_>>();
     validate_txscript_bytecode_limits(&bytecode)?;
     validate_signature_script_limits(&bytecode, &entrypoints, lowered_constants)?;
-    stack_analysis::validate_bytecode_stack_limits(
-        &compiled_entrypoints,
-        &entrypoints,
-        lowered_contract.fields.len(),
-        &state_push_bytecode,
-    )?;
-    Ok((bytecode, state_layout))
+    let compute_estimates =
+        stack_analysis::analyze_entrypoints(&compiled_entrypoints, &entrypoints, entrypoint_inputs, &state_push_bytecode)?;
+    Ok((bytecode, state_layout, compute_estimates))
 }
 
 fn compile_entrypoint_bytecodes<'i>(
@@ -398,6 +478,7 @@ fn build_compiled_contract<'i>(
     delegate_entrypoint: Option<&str>,
     bytecode: Vec<u8>,
     state_layout: CompiledStateLayout,
+    compute_estimates: BTreeMap<String, Option<ComputeEstimateArtifact>>,
     debug_info: Option<DebugInfo<'i>>,
 ) -> CompiledContract<'i> {
     CompiledContract {
@@ -409,6 +490,7 @@ fn build_compiled_contract<'i>(
         covenant_entrypoints: covenant_entrypoints.clone(),
         delegate_entrypoint: delegate_entrypoint.map(str::to_string),
         state_layout,
+        compute_estimates,
         debug_info,
     }
 }
