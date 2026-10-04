@@ -90,4 +90,4 @@ To report a security vulnerability privately, follow the instructions in the
 
 ## Notes
 
-- Kaspa dependencies are pulled from https://github.com/kaspanet/rusty-kaspa.
+- Kaspa dependencies use the rusty-kaspa 2.1.0 crates published on crates.io.

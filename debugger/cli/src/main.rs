@@ -345,7 +345,7 @@ fn parse_txid32(raw: &str) -> Result<TransactionId, Box<dyn std::error::Error>> 
 }
 
 fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::with_flags(EngineFlags::default())
         .add_data(pubkey)
         .expect("push pubkey")
         .add_op(kaspa_txscript::opcodes::codes::OpCheckSig)
@@ -354,14 +354,11 @@ fn build_p2pk_script(pubkey: &[u8]) -> Vec<u8> {
 }
 
 fn sigscript_push_bytecode(bytecode: &[u8]) -> Vec<u8> {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
-        .add_data(bytecode)
-        .expect("push bytecode data")
-        .drain()
+    ScriptBuilder::with_flags(EngineFlags::default()).add_data(bytecode).expect("push bytecode data").drain()
 }
 
 fn combine_action_and_redeem(action: &[u8], redeem_script: &[u8]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+    let mut builder = ScriptBuilder::with_flags(EngineFlags::default());
     builder.add_ops(action)?;
     builder.add_data(redeem_script)?;
     Ok(builder.drain())
@@ -937,7 +934,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
-    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let flags = EngineFlags::default();
 
     let utxos = utxo_specs
         .into_iter()

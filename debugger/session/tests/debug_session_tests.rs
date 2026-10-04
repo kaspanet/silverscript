@@ -100,7 +100,7 @@ where
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
 
-    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let flags = EngineFlags::default();
     let engine = debugger_session::session::DebugEngine::new(ctx, flags);
 
     let entry = parsed_contract
@@ -1089,7 +1089,7 @@ contract MissingStructuredSource() {
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
-    let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags { covenants_enabled: true, ..Default::default() });
+    let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags::default());
     let sigscript = encode_entry_sig_script(&compiled, "inspect", &[artifact_object([("amount", 7.into())])])?;
     let mut session = DebugSession::from_artifact(&sigscript, &compiled, "MissingStructuredSource", engine)?;
 
@@ -1670,7 +1670,7 @@ contract CovLocal() {
         0,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 0, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
@@ -1733,7 +1733,7 @@ contract CovEval() {
         0,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let shadow_ctx =
@@ -1868,7 +1868,7 @@ contract Routed() {
         1,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     let shadow_ctx =
         ShadowTxContext { tx: &populated_tx, input: input_ref, input_index: 1, utxo_entry: utxo_ref, covenants_ctx: &cov_ctx };
@@ -1977,7 +1977,7 @@ contract CovDebugDemo(int initial_value) {
         0,
         utxo_ref,
         ctx,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let shadow_ctx =

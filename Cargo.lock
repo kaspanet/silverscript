@@ -1994,8 +1994,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-addresses"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24fe6a838df0cb72cc8bc574d41ea536f5f027d940fadc0ef86fb3fcf2d0faf8"
 dependencies = [
  "borsh",
  "js-sys",
@@ -2009,8 +2010,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24f28872b1e6734326fdb2b4847ce6a37973511df30d2c914a60c2c1a567d982"
 dependencies = [
  "arc-swap",
  "async-channel 2.5.0",
@@ -2053,8 +2055,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus-client"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5af055a7d6df10d91d60051a4e72bf4326eee6c511045e38674880ccc9b7e74"
 dependencies = [
  "ahash",
  "borsh",
@@ -2083,8 +2086,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus-core"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d893b4b9e2d572b1075931ed79bdfec0a160cb4adbdf683aa24299c1c70725b"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2122,8 +2126,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensus-notify"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ced48827005c89d99bcae6d156caf6ff13ded028879e760a95f5fc1d7f802ae"
 dependencies = [
  "async-channel 2.5.0",
  "cfg-if",
@@ -2142,8 +2147,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-consensusmanager"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42a1f72afedc908f9e766f9c0dbf6d5d9eab4fd101e4db3a4f1e9df0e7c53ca0"
 dependencies = [
  "duration-string",
  "futures",
@@ -2162,8 +2168,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-core"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eb37cbed11008ef926a0373707096f04cbf502c2ed870ed89a968826198acaf"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -2182,8 +2189,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-database"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ea66eb60cc4080004f37a734d6f370c7790730d8b2ad08c0245ab3b3cabbe5c"
 dependencies = [
  "bincode",
  "enum-primitive-derive",
@@ -2205,8 +2213,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-hashes"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad607d2d41c3ba426b5ecb48e3070d2783d71249ebda6132404b338e19f9025c"
 dependencies = [
  "blake2b_simd",
  "blake3",
@@ -2226,8 +2235,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-math"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3673f7a496fb71fce017db1f9afcb99e08c5ce119814c8f3c98c00fb7ad42d7b"
 dependencies = [
  "borsh",
  "faster-hex 0.9.0",
@@ -2246,16 +2256,18 @@ dependencies = [
 
 [[package]]
 name = "kaspa-merkle"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66cfe0181f424ee637d951e170c0d05c82b12de601eafa2b163ad1f91058bdbb"
 dependencies = [
  "kaspa-hashes",
 ]
 
 [[package]]
 name = "kaspa-muhash"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d0dd223223d647fd8464f49502e14fdc868ce28faa862e7ca1f5c9d4a4f797"
 dependencies = [
  "kaspa-hashes",
  "kaspa-math",
@@ -2265,8 +2277,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-notify"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4f56e844a0122c24c4033a9453e9b0824c5da42edc9300ab7ea8a675d990e0f"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
@@ -2297,8 +2310,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-pow"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b6d52a69eeb328189ca9da8f2e6836a27458bc11aef367eb2b89ae2dd3532da"
 dependencies = [
  "js-sys",
  "kaspa-consensus-client",
@@ -2313,8 +2327,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-seq-commit"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42ec32e3ad3564713e0e8d423125ab5f8b6aee63e89553af62ba951fc1ad181e"
 dependencies = [
  "kaspa-hashes",
  "kaspa-merkle",
@@ -2324,8 +2339,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-smt"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afc8e67381dfbc60ffdd1d25916648b0ec833a416b70ab74980623ca5cd0a1cb"
 dependencies = [
  "blake3",
  "kaspa-hashes",
@@ -2335,8 +2351,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-smt-store"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdc4466e7de237da8e5ec58ebdcc019158595055b536a164a4b087fd416dfe8d"
 dependencies = [
  "kaspa-consensus-core",
  "kaspa-core",
@@ -2355,8 +2372,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-txscript"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "363a10df2d620f700001bb4d6a453c879ee7a96e55a5fe6356aceff2867967eb"
 dependencies = [
  "ark-bn254 0.6.0",
  "ark-ec 0.6.0",
@@ -2398,8 +2416,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-txscript-errors"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d5b061f2d1c2881dd1377a21ad2167878d3c7117809d4012388e92d83ff3cce"
 dependencies = [
  "borsh",
  "kaspa-hashes",
@@ -2409,8 +2428,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-txscript-zk-sdk"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e0c7a531e4dad0c531c0a2662d324d1fd025d059ad4007658bfa8428c912887"
 dependencies = [
  "ark-bn254 0.6.0",
  "ark-ec 0.6.0",
@@ -2426,8 +2446,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-utils"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95da50d233d424d6d8a639433fb43a4e56ef5ecbbb25af6cf7ea421d2a817991"
 dependencies = [
  "async-channel 2.5.0",
  "borsh",
@@ -2451,8 +2472,9 @@ dependencies = [
 
 [[package]]
 name = "kaspa-wasm-core"
-version = "2.0.1"
-source = "git+https://github.com/kaspanet/rusty-kaspa?rev=a41a333b08848f41bf737b72592e463a6011b8ac#a41a333b08848f41bf737b72592e463a6011b8ac"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0975ca024718c3dee38951c8d49667a53dfef3257e58e63d1f3829aeed0728b0"
 dependencies = [
  "faster-hex 0.9.0",
  "hexplay",
@@ -3909,9 +3931,9 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "stability"

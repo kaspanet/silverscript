@@ -898,7 +898,7 @@ impl<'a> TypeContext<'a> {
 }
 
 fn script_builder() -> ScriptBuilder {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::with_flags(EngineFlags::default())
 }
 
 fn push_sig_arg(
@@ -1201,7 +1201,7 @@ fn serialize_fixed_i64(value: i64, size: usize) -> CodecResult<Vec<u8>> {
 }
 
 fn deserialize_fixed_i64(bytes: &[u8]) -> CodecResult<i64> {
-    deserialize_script_i64(bytes, false).map_err(|err| CodecError::InvalidPush(err.to_string()))
+    deserialize_script_i64(bytes).map_err(|err| CodecError::InvalidPush(err.to_string()))
 }
 
 fn expect_int(value: &ArtifactValue) -> CodecResult<i64> {
@@ -1306,7 +1306,7 @@ mod tests {
 
     #[test]
     fn abi_signature_script_limit_matches_consensus() {
-        assert_eq!(MAX_SIGNATURE_SCRIPT_LEN, kaspa_consensus_core::config::params::MAINNET_PARAMS.new_max_signature_script_len);
+        assert_eq!(MAX_SIGNATURE_SCRIPT_LEN, kaspa_consensus_core::config::params::MAINNET_PARAMS.max_signature_script_len);
     }
 
     #[test]

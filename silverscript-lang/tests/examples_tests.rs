@@ -101,7 +101,7 @@ fn run_contract_with_tx_sequence(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
@@ -138,7 +138,7 @@ fn run_contract_with_outputs(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
@@ -525,7 +525,7 @@ fn runs_everything_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -651,7 +651,7 @@ fn compiles_hodl_vault_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -750,7 +750,7 @@ fn compiles_mecenas_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -866,7 +866,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -922,7 +922,7 @@ fn compiles_p2pkh_example_and_verifies() {
             0,
             &utxo_entry,
             EngineCtx::new(&sig_cache).with_reused(&reused_values),
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         );
         vm.execute()
     };
@@ -980,7 +980,7 @@ fn compiles_p2pkh_ecdsa_example_and_verifies() {
             0,
             &utxo_entry,
             EngineCtx::new(&sig_cache).with_reused(&reused_values),
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         );
         vm.execute()
     };
@@ -1041,7 +1041,7 @@ fn compiles_transfer_with_timeout_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1085,7 +1085,7 @@ fn compiles_transfer_with_timeout_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1146,7 +1146,7 @@ fn compiles_covenant_escrow_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1211,7 +1211,7 @@ fn compiles_covenant_last_will_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1255,7 +1255,7 @@ fn compiles_covenant_last_will_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1302,7 +1302,7 @@ fn compiles_covenant_last_will_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1404,7 +1404,7 @@ fn compiles_covenant_mecenas_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1515,7 +1515,7 @@ fn compiles_covenant_id_example_and_verifies() {
             0,
             populated_tx.utxo(0).expect("utxo entry for input 0"),
             EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         );
 
         vm.execute()
@@ -1577,7 +1577,7 @@ fn compiles_bar_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1633,7 +1633,7 @@ fn compiles_foo_example_and_verifies() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1721,7 +1721,7 @@ fn compiles_p2pkh_invalid_example_and_fails() {
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();
@@ -1792,7 +1792,7 @@ fn compiles_sibling_introspection_example_and_verifies() {
         0,
         &utxo0,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
 
     let result = vm.execute();

@@ -4,7 +4,7 @@ use super::*;
 use crate::compiler::builtin_types::constructor_parameters;
 use kaspa_txscript::opcodes::{OP_DATA_MAX_VAL, OP_DATA_MIN_VAL};
 use kaspa_txscript::script_builder::ScriptBuilderError;
-use kaspa_txscript::{max_script_element_size, max_scripts_size};
+use kaspa_txscript::{MAX_SCRIPT_ELEMENT_SIZE, MAX_SCRIPTS_SIZE};
 
 mod builtin;
 
@@ -728,11 +728,11 @@ fn explicit_push_encoded_size(data_len: usize) -> Result<usize, CompilerError> {
 pub(super) fn data_prefix(data_len: usize) -> Result<Vec<u8>, CompilerError> {
     let encoded_size = explicit_push_encoded_size(data_len)?;
     // Match the covenant-enabled script builder's validation order without allocating the payload.
-    let script_limit = max_scripts_size(true);
+    let script_limit = MAX_SCRIPTS_SIZE;
     if encoded_size > script_limit {
         return Err(ScriptBuilderError::DataRejected(encoded_size, script_limit).into());
     }
-    let element_limit = max_script_element_size(true);
+    let element_limit = MAX_SCRIPT_ELEMENT_SIZE;
     if data_len > element_limit {
         return Err(ScriptBuilderError::ElementExceedsMaxSize(data_len, element_limit).into());
     }
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn data_prefix_matches_builder_encoding_and_size_errors() {
-        let limit = max_scripts_size(true);
+        let limit = MAX_SCRIPTS_SIZE;
         for data_len in [0, 1, 74, 75, 76, 254, 255, 256, 65534, 65535, 65536, limit - 5, limit - 4, limit, limit + 1] {
             let mut builder = script_builder();
             let data = vec![0; data_len];
