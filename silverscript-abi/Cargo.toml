@@ -1,6 +1,6 @@
 [package]
 name = "silverscript-abi"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2024"
 rust-version.workspace = true
 license.workspace = true
@@ -17,4 +17,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 kaspa-consensus-core = { workspace = true }
 # Keep the Sil compiler test-only; production ABI code must not depend on it.
-silverscript-lang = { workspace = true }
+silverscript-lang = { path = "../silverscript-lang" }

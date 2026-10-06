@@ -1,7 +1,7 @@
 [package]
 name = "tree-sitter-silverscript"
 description = "Kaspa SilverScript Lang"
-version = "0.1.0"
+version = "1.0.1"
 authors = ["Kaspa Developers"]
 license = "ISC"
 readme = "README.md"
