@@ -14,7 +14,7 @@ version = "1.0.1"
 edition = "2024"
 license = "ISC"
 authors = ["Kaspa developers"]
-repository = ""
+repository = "https://github.com/kaspanet/silverscript"
 rust-version = "1.94.0"
 
 [workspace.dependencies]
