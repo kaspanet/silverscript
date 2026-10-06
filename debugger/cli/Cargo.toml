@@ -1,5 +1,6 @@
 [package]
 name = "cli-debugger"
+description = "Command-line debugger for SilverScript contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

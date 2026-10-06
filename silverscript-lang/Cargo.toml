@@ -1,5 +1,6 @@
 [package]
 name = "silverscript-lang"
+description = "SilverScript language parser and compiler for Kaspa scripts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

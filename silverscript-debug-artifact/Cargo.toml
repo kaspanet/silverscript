@@ -1,5 +1,6 @@
 [package]
 name = "silverscript-debug-artifact"
+description = "Portable SilverScript ABI artifacts with compiler debug information"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

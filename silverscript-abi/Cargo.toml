@@ -1,5 +1,6 @@
 [package]
 name = "silverscript-abi"
+description = "Portable ABI types and codecs for SilverScript contracts"
 version = "1.0.1"
 edition = "2024"
 rust-version.workspace = true
