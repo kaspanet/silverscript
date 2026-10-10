@@ -13,7 +13,7 @@ name = "cli-debugger"
 path = "src/main.rs"
 
 [dependencies]
-debugger-session = { version = "1.0.1", path = "../session" }
+debugger-session.workspace = true
 silverscript-abi.workspace = true
 silverscript-debug-artifact.workspace = true
 silverscript-lang.workspace = true
