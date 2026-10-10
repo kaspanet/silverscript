@@ -22,5 +22,4 @@ mod tests {
             "6616a66757315de0221cb2acba729113cebde31f8d3ca7fa93878a0584b96905"
         );
     }
-
 }
