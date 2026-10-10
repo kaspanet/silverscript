@@ -33,7 +33,7 @@ fn execute(compiled: silverscript_abi::SilAbiArtifact, args: &[ArtifactValue]) {
         0,
         &utxo,
         EngineCtx::new(&cache).with_reused(&reused),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     )
     .execute()
     .expect("compiled temporal expression executes");

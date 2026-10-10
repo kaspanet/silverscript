@@ -372,7 +372,7 @@ mod tests {
             &script,
             &reused,
             &cache,
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         )
         .execute_and_return_stacks();
         if fits {
@@ -576,7 +576,7 @@ mod tests {
                 &script,
                 &reused,
                 &cache,
-                EngineFlags { covenants_enabled: true, ..Default::default() },
+                EngineFlags::default(),
             )
             .execute_and_return_stacks()
             .unwrap();

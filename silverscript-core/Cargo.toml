@@ -1,0 +1,13 @@
+[package]
+name = "silverscript-core"
+description = "Shared core utilities for SilverScript crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blake3.workspace = true
+kaspa-txscript.workspace = true

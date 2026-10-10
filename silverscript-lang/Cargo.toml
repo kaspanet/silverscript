@@ -1,5 +1,6 @@
 [package]
 name = "silverscript-lang"
+description = "SilverScript language parser and compiler for Kaspa scripts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -30,7 +31,8 @@ serde_json = "1.0"
 clap = { version = "4.5.60", features = ["derive"] }
 faster-hex = "0.10"
 semver = "1.0"
-silverscript-abi = { path = "../silverscript-abi" }
+silverscript-abi.workspace = true
+silverscript-core.workspace = true
 
 [dev-dependencies]
 kaspa-addresses.workspace = true

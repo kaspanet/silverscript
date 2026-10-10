@@ -1,5 +1,6 @@
 [package]
 name = "cli-debugger"
+description = "Command-line debugger for SilverScript contracts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +13,7 @@ name = "cli-debugger"
 path = "src/main.rs"
 
 [dependencies]
-debugger-session = { path = "../session" }
+debugger-session.workspace = true
 silverscript-abi.workspace = true
 silverscript-debug-artifact.workspace = true
 silverscript-lang.workspace = true

@@ -1701,7 +1701,7 @@ impl<'a, 'i> DebugSession<'a, 'i> {
     }
 
     fn build_shadow_bytecode(&self, bindings: &[ShadowBindingValue], expr_bytecode: &[u8]) -> Result<Vec<u8>, String> {
-        let mut builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+        let mut builder = ScriptBuilder::with_flags(EngineFlags::default());
         for binding in bindings {
             builder.add_data(&binding.value).map_err(|err| err.to_string())?;
         }
@@ -1720,13 +1720,10 @@ impl<'a, 'i> DebugSession<'a, 'i> {
                 shadow.input_index,
                 shadow.utxo_entry,
                 ctx,
-                EngineFlags { covenants_enabled: true, ..Default::default() },
+                EngineFlags::default(),
             )
         } else {
-            TxScriptEngine::new(
-                EngineCtx::new(&sig_cache).with_reused(&reused_values),
-                EngineFlags { covenants_enabled: true, ..Default::default() },
-            )
+            TxScriptEngine::new(EngineCtx::new(&sig_cache).with_reused(&reused_values), EngineFlags::default())
         };
         for opcode in parse_script::<DebugTx<'_>, DebugReused>(bytecode) {
             let opcode = opcode.map_err(|err| format!("failed to parse shadow bytecode: {err}"))?;
@@ -2450,10 +2447,8 @@ mod tests {
     ) -> Result<DebugSession<'static, 'static>, kaspa_txscript_errors::TxScriptError> {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
-        let engine: DebugEngine<'static> = TxScriptEngine::new(
-            EngineCtx::new(sig_cache).with_reused(reused_values),
-            EngineFlags { covenants_enabled: true, ..Default::default() },
-        );
+        let engine: DebugEngine<'static> =
+            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags::default());
         let debug_info = DebugInfo {
             source: String::new(),
             steps,
@@ -2518,7 +2513,7 @@ mod tests {
     #[test]
     fn shadow_vm_evaluates_large_runtime_byte_array_param() {
         let payload = vec![0x42; 800];
-        let mut sig_builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+        let mut sig_builder = ScriptBuilder::with_flags(EngineFlags::default());
         sig_builder.add_data(&payload).unwrap();
         let sigscript = sig_builder.drain();
 
@@ -2682,10 +2677,8 @@ mod tests {
     fn list_variables_renders_struct_constant_from_recorded_value() {
         let sig_cache = Box::leak(Box::new(Cache::new(10_000)));
         let reused_values: &'static SigHashReusedValuesUnsync = Box::leak(Box::new(SigHashReusedValuesUnsync::new()));
-        let engine: DebugEngine<'static> = TxScriptEngine::new(
-            EngineCtx::new(sig_cache).with_reused(reused_values),
-            EngineFlags { covenants_enabled: true, ..Default::default() },
-        );
+        let engine: DebugEngine<'static> =
+            TxScriptEngine::new(EngineCtx::new(sig_cache).with_reused(reused_values), EngineFlags::default());
         let debug_info = DebugInfo {
             source: String::new(),
             steps: vec![],

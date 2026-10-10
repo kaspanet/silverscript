@@ -199,7 +199,7 @@ fn execute_tx(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }

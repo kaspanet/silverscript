@@ -448,12 +448,12 @@ mod tests {
             &script,
             &reused_values,
             &sig_cache,
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         )
         .execute_and_return_stacks()
         .expect("script executes");
 
-        stacks.dstack.iter().map(|entry| deserialize_i64(entry, true).expect("stack entry decodes to int")).collect()
+        stacks.dstack.iter().map(|entry| deserialize_i64(entry).expect("stack entry decodes to int")).collect()
     }
 
     /// Executes local stack ops against a logical top-to-bottom test stack.

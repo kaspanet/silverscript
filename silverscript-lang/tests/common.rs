@@ -94,10 +94,7 @@ pub fn encode_entry_sig_script(artifact: &SilAbiArtifact, entry_name: &str, args
 }
 
 pub fn push_redeem_script(bytecode: &[u8]) -> Vec<u8> {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
-        .add_data(bytecode)
-        .expect("push redeem script")
-        .drain()
+    ScriptBuilder::with_flags(EngineFlags::default()).add_data(bytecode).expect("push redeem script").drain()
 }
 
 pub fn covenant_decl_sigscript(compiled: &SilAbiArtifact, function_name: &str, args: Vec<ArtifactValue>, is_leader: bool) -> Vec<u8> {
@@ -137,7 +134,7 @@ pub fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, in
         input_idx,
         utxo,
         EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true, sigop_script_units: 0.into() },
+        EngineFlags { sigop_script_units: 0.into() },
     );
     vm.execute()
 }

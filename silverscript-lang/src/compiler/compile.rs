@@ -12,7 +12,7 @@ use kaspa_consensus_core::tx::PopulatedTransaction;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::serialize_i64;
-use kaspa_txscript::{EngineFlags, MAX_STACK_SIZE, NO_COST_OPCODE, max_ops_per_script, max_scripts_size, parse_script};
+use kaspa_txscript::{EngineFlags, MAX_OPS_PER_SCRIPT, MAX_SCRIPTS_SIZE, MAX_STACK_SIZE, NO_COST_OPCODE, parse_script};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 mod analysis;
@@ -35,7 +35,7 @@ pub(super) use state::{encoded_state_len_for_layout_field_types, encoded_type_ch
 use statement::*;
 
 fn script_builder() -> ScriptBuilder {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::with_flags(EngineFlags::default())
 }
 
 pub(super) fn compile_contract_impl<'i>(
@@ -169,9 +169,9 @@ fn validate_entrypoint_stack_limits(entrypoints: &[&FunctionAst<'_>], state_fiel
 }
 
 fn validate_txscript_bytecode_limits(bytecode: &[u8]) -> Result<(), CompilerError> {
-    let maximum_operations = usize::try_from(max_ops_per_script(true))
-        .map_err(|_| CompilerError::BytecodeLimitAnalysis("negative opcode limit".to_string()))?;
-    validate_txscript_bytecode_limits_with(bytecode, max_scripts_size(true), maximum_operations)
+    let maximum_operations =
+        usize::try_from(MAX_OPS_PER_SCRIPT).map_err(|_| CompilerError::BytecodeLimitAnalysis("negative opcode limit".to_string()))?;
+    validate_txscript_bytecode_limits_with(bytecode, MAX_SCRIPTS_SIZE, maximum_operations)
 }
 
 fn validate_txscript_bytecode_limits_with(
@@ -200,7 +200,7 @@ fn validate_signature_script_limits<'i>(
     entrypoints: &[&FunctionAst<'i>],
     constants: &HashMap<String, Expr<'i>>,
 ) -> Result<(), CompilerError> {
-    let max_signature_script_len = MAINNET_PARAMS.new_max_signature_script_len;
+    let max_signature_script_len = MAINNET_PARAMS.max_signature_script_len;
     if bytecode.len() > max_signature_script_len {
         return Err(CompilerError::RedeemScriptTooLarge { actual: bytecode.len(), maximum: max_signature_script_len });
     }

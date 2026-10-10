@@ -12,7 +12,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use blake3::Hasher as Blake3Hasher;
 use kaspa_txscript::{
     EngineFlags, deserialize_i64 as deserialize_script_i64,
     opcodes::codes::{
@@ -28,10 +27,10 @@ use thiserror::Error;
 mod json;
 
 pub use json::to_pretty_json;
+pub use silverscript_core::utils::template_hash;
 
 pub const SIL_ABI_SCHEMA_VERSION: u32 = 1;
 pub const MAX_SIGNATURE_SCRIPT_LEN: usize = 250_000;
-const TEMPLATE_PART_LENGTH_BYTES: usize = 8;
 
 /// A Sil entrypoint's fixed-width signature dispatch tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -97,16 +96,6 @@ pub enum DispatchTagParseError {
     InvalidLength(usize),
     #[error("invalid dispatch tag hex: {0}")]
     InvalidHex(String),
-}
-
-/// Calculate the canonical hash of a state-bearing Silverscript template.
-pub fn template_hash(prefix: &[u8], suffix: &[u8]) -> [u8; 32] {
-    let prefix_len = i64::try_from(prefix.len()).unwrap();
-    let suffix_len = i64::try_from(suffix.len()).unwrap();
-    let encoded_prefix_len = serialize_script_i64(prefix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
-    let encoded_suffix_len = serialize_script_i64(suffix_len, Some(TEMPLATE_PART_LENGTH_BYTES)).unwrap();
-
-    Blake3Hasher::new().update(&encoded_prefix_len).update(prefix).update(&encoded_suffix_len).update(suffix).finalize().into()
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -898,7 +887,7 @@ impl<'a> TypeContext<'a> {
 }
 
 fn script_builder() -> ScriptBuilder {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::with_flags(EngineFlags::default())
 }
 
 fn push_sig_arg(
@@ -1201,7 +1190,7 @@ fn serialize_fixed_i64(value: i64, size: usize) -> CodecResult<Vec<u8>> {
 }
 
 fn deserialize_fixed_i64(bytes: &[u8]) -> CodecResult<i64> {
-    deserialize_script_i64(bytes, false).map_err(|err| CodecError::InvalidPush(err.to_string()))
+    deserialize_script_i64(bytes).map_err(|err| CodecError::InvalidPush(err.to_string()))
 }
 
 fn expect_int(value: &ArtifactValue) -> CodecResult<i64> {
@@ -1306,7 +1295,7 @@ mod tests {
 
     #[test]
     fn abi_signature_script_limit_matches_consensus() {
-        assert_eq!(MAX_SIGNATURE_SCRIPT_LEN, kaspa_consensus_core::config::params::MAINNET_PARAMS.new_max_signature_script_len);
+        assert_eq!(MAX_SIGNATURE_SCRIPT_LEN, kaspa_consensus_core::config::params::MAINNET_PARAMS.max_signature_script_len);
     }
 
     #[test]
@@ -1330,16 +1319,8 @@ mod tests {
         );
     }
 
-    // Locks the ABI copy to Sil's canonical implementation. Ideally, Sil will
-    // expose this from a small shared core crate instead of requiring a copy.
     #[test]
-    fn template_hash_matches_silverscript() {
-        let cases: &[(&[u8], &[u8])] = &[(b"", b""), (b"a", b"bc"), (b"ab", b"c"), (&[0, 1, 2, 3], &[0xff, 0x80, 0x40])];
-
-        for (prefix, suffix) in cases {
-            assert_eq!(template_hash(prefix, suffix), silverscript_lang::template::template_hash(prefix, suffix));
-        }
-
+    fn template_hash_matches_golden_vectors() {
         let kcc1_vectors: &[(&[u8], &[u8], &str)] = &[
             (&[], &[], "e572dff82304700b856a555ac3a4558d0df3646a3727816500270a93c66aac1e"),
             (b"a", b"bc", "405e183e2494cdbe2df89349cc0ffa5b77fb885ad97a1d5660ecd0692ef8142a"),

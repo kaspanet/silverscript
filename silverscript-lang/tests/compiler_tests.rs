@@ -17,7 +17,7 @@ use kaspa_txscript::covenants::CovenantsContext;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
 use kaspa_txscript::{
-    EngineCtx, EngineFlags, SeqCommitAccessor, TxScriptEngine, max_ops_per_script, max_script_element_size, max_scripts_size,
+    EngineCtx, EngineFlags, MAX_OPS_PER_SCRIPT, MAX_SCRIPT_ELEMENT_SIZE, MAX_SCRIPTS_SIZE, SeqCommitAccessor, TxScriptEngine,
     parse_script, pay_to_address_script, pay_to_script_hash_script, pay_to_script_hash_signature_script_with_flags, script_to_str,
     serialize_i64,
 };
@@ -39,7 +39,7 @@ use common::{
 };
 
 fn script_builder() -> ScriptBuilder {
-    ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+    ScriptBuilder::with_flags(EngineFlags::default())
 }
 
 fn artifact_object(fields: impl IntoIterator<Item = (&'static str, ArtifactValue)>) -> ArtifactValue {
@@ -98,11 +98,7 @@ fn pay_to_script_hash_signature_script(
     redeem_script: Vec<u8>,
     signature_script: Vec<u8>,
 ) -> Result<Vec<u8>, kaspa_txscript::script_builder::ScriptBuilderError> {
-    pay_to_script_hash_signature_script_with_flags(
-        redeem_script,
-        signature_script,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
-    )
+    pay_to_script_hash_signature_script_with_flags(redeem_script, signature_script, EngineFlags::default())
 }
 
 fn run_bytecode_with_dispatch_tag(bytecode: Vec<u8>, dispatch_tag: DispatchTag) -> Result<(), kaspa_txscript_errors::TxScriptError> {
@@ -138,7 +134,7 @@ fn run_bytecode_with_tx(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
@@ -180,7 +176,7 @@ fn run_bytecode_with_sigscript_and_time(
         0,
         &utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
@@ -226,7 +222,7 @@ fn execute_input(tx: Transaction, entries: Vec<UtxoEntry>, input_idx: usize) -> 
         input_idx,
         utxo_entry,
         EngineCtx::new(&sig_cache).with_reused(&reused_values),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
@@ -1791,7 +1787,7 @@ fn introspection_fields_and_direct_lock_opcodes_emit_and_execute() {
             0,
             populated.utxo(0).expect("utxo entry for input 0"),
             context,
-            EngineFlags { covenants_enabled: true, ..Default::default() },
+            EngineFlags::default(),
         )
         .with_opcode_execution_log_buffer(&mut trace);
         vm.execute()
@@ -7002,14 +6998,7 @@ fn run_bytecode_with_tx_and_covenants(
     }
 
     let utxo_entry = populated.utxo(0).expect("utxo entry for input 0");
-    let mut vm = TxScriptEngine::from_transaction_input(
-        &populated,
-        &tx.inputs[0],
-        0,
-        utxo_entry,
-        ctx,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
-    );
+    let mut vm = TxScriptEngine::from_transaction_input(&populated, &tx.inputs[0], 0, utxo_entry, ctx, EngineFlags::default());
     vm.execute()
 }
 
@@ -10939,7 +10928,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
         )
         .expect("compile succeeds");
 
-        let expected = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() })
+        let expected = ScriptBuilder::with_flags(EngineFlags::default())
             .add_data_with_push_opcode(&claim)
             .unwrap()
             .add_data_with_push_opcode(&control_index)
@@ -11014,7 +11003,7 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
     )
     .expect("compile succeeds");
 
-    let mut expected_builder = ScriptBuilder::with_flags(EngineFlags { covenants_enabled: true, ..Default::default() });
+    let mut expected_builder = ScriptBuilder::with_flags(EngineFlags::default());
     expected_builder.add_data_with_push_opcode(&journal_hash).unwrap();
     expected_builder.add_data_with_push_opcode(&proof).unwrap();
     expected_builder.add_data_with_push_opcode(&image_id).unwrap();
@@ -17712,7 +17701,7 @@ fn execute_handcrafted_p2sh(
     compiled: &silverscript_abi::SilAbiArtifact,
     unlocking_prefix: Vec<u8>,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
-    let flags = EngineFlags { covenants_enabled: true, ..Default::default() };
+    let flags = EngineFlags::default();
     let signature_script = pay_to_script_hash_signature_script_with_flags(bytecode(compiled).clone(), unlocking_prefix, flags)
         .expect("redeem script push should build");
     let input = TransactionInput::new(
@@ -17899,7 +17888,7 @@ fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
     match err.root() {
         CompilerError::RedeemScriptTooLarge { actual, maximum } => {
             assert!(*actual > *maximum);
-            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+            assert_eq!(*maximum, MAINNET_PARAMS.max_signature_script_len);
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -17907,8 +17896,8 @@ fn compiler_rejects_redeem_scripts_above_the_signature_script_limit() {
 
 #[test]
 fn redeem_script_limit_prevents_exceeding_the_txscript_script_size_limit() {
-    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
-    assert!(signature_script_limit < max_scripts_size(true));
+    let signature_script_limit = MAINNET_PARAMS.max_signature_script_len;
+    assert!(signature_script_limit < MAX_SCRIPTS_SIZE);
 
     let source = r#"
         contract OversizedScript() {
@@ -17933,8 +17922,8 @@ fn redeem_script_limit_prevents_exceeding_the_txscript_script_size_limit() {
 
 #[test]
 fn redeem_script_limit_prevents_exceeding_the_txscript_opcode_limit() {
-    let signature_script_limit = MAINNET_PARAMS.new_max_signature_script_len;
-    let opcode_limit = usize::try_from(max_ops_per_script(true)).expect("covenant opcode limit is non-negative");
+    let signature_script_limit = MAINNET_PARAMS.max_signature_script_len;
+    let opcode_limit = usize::try_from(MAX_OPS_PER_SCRIPT).expect("covenant opcode limit is non-negative");
     // Every counted opcode occupies at least one byte, so the tighter redeem-script
     // byte limit makes the opcode limit unreachable.
     assert!(signature_script_limit < opcode_limit);
@@ -17962,7 +17951,7 @@ fn redeem_script_limit_prevents_exceeding_the_txscript_opcode_limit() {
 
 #[test]
 fn compiler_rejects_statically_oversized_runtime_stack_elements() {
-    let element_limit = max_script_element_size(true);
+    let element_limit = MAX_SCRIPT_ELEMENT_SIZE;
     assert_eq!(element_limit, 1_000_000);
 
     let source = r#"
@@ -18062,7 +18051,7 @@ fn compiler_rejects_fixed_abi_payloads_that_cannot_fit_a_signature_script() {
         CompilerError::EntrypointSignatureScriptTooLarge { function, estimated, maximum } => {
             assert_eq!(function, "main");
             assert!(*estimated > *maximum);
-            assert_eq!(*maximum, MAINNET_PARAMS.new_max_signature_script_len);
+            assert_eq!(*maximum, MAINNET_PARAMS.max_signature_script_len);
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -18078,7 +18067,7 @@ fn dynamic_abi_encoder_rejects_consensus_oversized_signature_script() {
         }
     "#;
     let compiled = compile_contract(source, &[], CompileOptions::default()).expect("dynamic entrypoint compiles");
-    let maximum = MAINNET_PARAMS.new_max_signature_script_len;
+    let maximum = MAINNET_PARAMS.max_signature_script_len;
     let err = encode_entry_sig_script(&compiled, "main", &[ArtifactValue::Bytes(vec![0; maximum])])
         .expect_err("the complete P2SH signature script must fit the consensus limit");
     assert!(matches!(err, silverscript_abi::CodecError::SignatureScriptTooLarge { actual, maximum: limit }

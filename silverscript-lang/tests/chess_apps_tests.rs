@@ -450,12 +450,8 @@ fn player_template_hash(fix: &MuxChessFixture) -> Hash {
 
 fn entry_sigscript(compiled: &silverscript_abi::SilAbiArtifact, function: &str, args: Vec<ArtifactValue>) -> Vec<u8> {
     let sigscript = common::encode_entry_sig_script(compiled, function, &args).expect("sigscript builds");
-    pay_to_script_hash_signature_script_with_flags(
-        common::bytecode(compiled).clone(),
-        sigscript,
-        EngineFlags { covenants_enabled: true, ..Default::default() },
-    )
-    .expect("wrap p2sh sigscript")
+    pay_to_script_hash_signature_script_with_flags(common::bytecode(compiled).clone(), sigscript, EngineFlags::default())
+        .expect("wrap p2sh sigscript")
 }
 
 fn tx_input(index: u32, signature_script: Vec<u8>, sig_op_count: u8) -> TransactionInput {
@@ -505,7 +501,7 @@ fn execute_input_with_covenants(tx: Transaction, entries: Vec<UtxoEntry>, input_
         input_idx,
         utxo,
         EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx),
-        EngineFlags { covenants_enabled: true, ..Default::default() },
+        EngineFlags::default(),
     );
     vm.execute()
 }
