@@ -1,0 +1,27 @@
+[package]
+name = "debugger-dap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "debugger-dap"
+path = "src/main.rs"
+
+[dependencies]
+dap = "0.4.1-alpha1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+debugger-session = { path = "../session" }
+silverscript-lang = { path = "../../silverscript-lang" }
+kaspa-consensus-core.workspace = true
+kaspa-txscript.workspace = true
+kaspa-txscript-errors.workspace = true
+secp256k1.workspace = true
+blake2b_simd.workspace = true
+rand.workspace = true
+
+[dev-dependencies]

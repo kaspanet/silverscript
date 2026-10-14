@@ -6,6 +6,7 @@ members = [
     "silverscript-debug-artifact",
     "debugger/session",
     "debugger/cli",
+    "debugger/dap",
 ]
 exclude = ["tree-sitter"]
 resolver = "2"
