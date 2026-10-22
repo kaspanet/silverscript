@@ -44,5 +44,5 @@ silverscript-core = { version = "1.0.1", path = "silverscript-core" }
 silverscript-lang = { version = "1.0.1", path = "silverscript-lang" }
 silverscript-abi = { version = "1.0.1", path = "silverscript-abi" }
 silverscript-debug-artifact = { version = "1.0.1", path = "silverscript-debug-artifact" }
-debugger-session = { version = "1.0.1", path = "debugger/session" }
+silverscript-debugger-session = { version = "1.0.1", path = "debugger/session" }
 thiserror = "1.0.61"

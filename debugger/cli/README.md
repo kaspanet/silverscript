@@ -5,19 +5,19 @@ A light-weight, GDB-like attempt at stepping through and testing SilverScript co
 ### Quick Start
 
 ```bash
-cli-debugger <path> -f <function> [--ctor-arg <val>]... [--arg <val>]...
+silverscript-cli-debugger <path> -f <function> [--ctor-arg <val>]... [--arg <val>]...
 ```
 
 **Example:**
 ```bash
-cli-debugger ./counter.sil -f check --ctor-arg 10 --arg 7
+silverscript-cli-debugger ./counter.sil -f check --ctor-arg 10 --arg 7
 ```
 
 Structured `State` and custom `struct` args use JSON:
 
 ```bash
-cli-debugger ./vault.sil -f inspect --arg '{"amount":7,"tag":"0xbeef"}'
-cli-debugger ./vault.sil -f inspect_many --arg '[{"amount":7},{"amount":9}]'
+silverscript-cli-debugger ./vault.sil -f inspect --arg '{"amount":7,"tag":"0xbeef"}'
+silverscript-cli-debugger ./vault.sil -f inspect_many --arg '[{"amount":7},{"amount":9}]'
 ```
 
 ---
@@ -180,10 +180,10 @@ If an output is authorized by a different input, set `authorizing_input` on that
 
 ```bash
 # Run all tests using the matching `.test.json` file inferred from the contract path
-cli-debugger <contract-path> --run-all
+silverscript-cli-debugger <contract-path> --run-all
 
 # Run a specific test case using the matching `.test.json` file inferred from the contract path
-cli-debugger <contract-path> --run --test-name <name>
+silverscript-cli-debugger <contract-path> --run --test-name <name>
 ```
 
 Add `--test-file <path>` to either form to use an explicit test file instead of the inferred `.test.json` path.

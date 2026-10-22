@@ -1,5 +1,5 @@
 [package]
-name = "cli-debugger"
+name = "silverscript-cli-debugger"
 description = "Command-line debugger for SilverScript contracts"
 version.workspace = true
 edition.workspace = true
@@ -9,11 +9,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "cli-debugger"
+name = "silverscript-cli-debugger"
 path = "src/main.rs"
 
 [dependencies]
-debugger-session.workspace = true
+silverscript-debugger-session.workspace = true
 silverscript-abi.workspace = true
 silverscript-debug-artifact.workspace = true
 silverscript-lang.workspace = true

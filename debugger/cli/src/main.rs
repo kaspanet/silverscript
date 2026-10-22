@@ -4,14 +4,6 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use debugger_session::args::{parse_artifact_args, parse_ctor_args, parse_hex_bytes, parse_state_value};
-use debugger_session::covenant::{CovenantBinding as DebugCovenantBinding, ResolvedCovenantCallTarget, resolve_covenant_call_target};
-use debugger_session::session::{DebugEngine, DebugSession, DebugValue, ShadowTxContext, Variable, VariableOrigin};
-use debugger_session::test_runner::{
-    TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
-    resolve_contract_test,
-};
-use debugger_session::{format_failure_report, format_value};
 use kaspa_consensus_core::Hash;
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
 use kaspa_consensus_core::mass::units::SigopCount;
@@ -25,13 +17,23 @@ use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 use silverscript_abi::{ArtifactValue, SilContractArtifact, TypeArtifact, encode_contract_entry_sig_script};
 use silverscript_debug_artifact::{SilDebugArtifact, compile_contract as compile_debug_artifact};
+use silverscript_debugger_session::args::{parse_artifact_args, parse_ctor_args, parse_hex_bytes, parse_state_value};
+use silverscript_debugger_session::covenant::{
+    CovenantBinding as DebugCovenantBinding, ResolvedCovenantCallTarget, resolve_covenant_call_target,
+};
+use silverscript_debugger_session::session::{DebugEngine, DebugSession, DebugValue, ShadowTxContext, Variable, VariableOrigin};
+use silverscript_debugger_session::test_runner::{
+    TestExpectation, TestTxInputScenarioResolved, TestTxOutputScenarioResolved, TestTxScenarioResolved, discover_sidecar_path,
+    resolve_contract_test,
+};
+use silverscript_debugger_session::{format_failure_report, format_value};
 use silverscript_lang::ast::{ContractAst, Expr, ExprKind, STATE_TYPE_NAME, TypeBase, parse_contract_ast, parse_type_ref};
 use silverscript_lang::compiler::{CompileOptions, compile_contract_ast};
 
 const PROMPT: &str = "(sdb) ";
 
 #[derive(Debug, Parser)]
-#[command(name = "cli-debugger", about = "SilverScript debugger")]
+#[command(name = "silverscript-cli-debugger", about = "SilverScript debugger")]
 struct CliArgs {
     script_path: Option<String>,
     #[arg(long = "test-file")]
@@ -599,7 +601,7 @@ fn run_repl(session: &mut DebugSession<'_, '_>, pending_console_output: &mut Vec
 }
 
 fn run_all_tests(test_file: &str, script_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    use debugger_session::test_runner::read_contract_test_file;
+    use silverscript_debugger_session::test_runner::read_contract_test_file;
     let test_file_path = Path::new(test_file);
     let parsed = read_contract_test_file(test_file_path)?;
     let test_names: Vec<String> = parsed.tests.iter().map(|t| t.name.clone()).collect();

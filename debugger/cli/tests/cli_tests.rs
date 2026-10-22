@@ -526,7 +526,7 @@ contract IfStatement(int x, int y) {
     .expect("write temp contract");
     let contract_path = &tmp;
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(contract_path)
         .arg("--function")
         .arg("hello")
@@ -542,13 +542,13 @@ contract IfStatement(int x, int y) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"help\nl\nstack\nb 1\nb 7\nb\nn\nsi\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -569,7 +569,7 @@ contract IfStatement(int x, int y) {
 fn cli_debugger_eval_command_reports_results_and_errors() {
     let (script_path, _test_file_path) = write_test_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("check")
@@ -581,13 +581,13 @@ fn cli_debugger_eval_command_reports_results_and_errors() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"eval 1 + 2\ne a + 1\ne missing + 1\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -621,7 +621,7 @@ contract TemporalState(temporal start) {
         r#"{"tests": []}"#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("check")
@@ -657,7 +657,7 @@ contract TemporalLocal() {
         r#"{"tests": []}"#,
     );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("check")
@@ -670,7 +670,7 @@ contract TemporalLocal() {
     child.stdin.as_mut().expect("stdin available").write_all(b"n\nvars\nq\n").expect("write debugger commands");
     let output = child.wait_with_output().expect("wait for temporal local debug session");
 
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.is_empty(), "unexpected stderr: {stderr}");
@@ -682,7 +682,7 @@ contract TemporalLocal() {
 fn cli_debugger_interactive_defers_console_logs_until_after_stepping_past_log_statement() {
     let (script_path, _test_file_path) = write_logging_test_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("check")
@@ -694,12 +694,12 @@ fn cli_debugger_interactive_defers_console_logs_until_after_stepping_past_log_st
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     child.stdin.as_mut().expect("stdin available").write_all(b"n\nq\n").expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -716,7 +716,7 @@ fn cli_debugger_interactive_defers_console_logs_until_after_stepping_past_log_st
 fn cli_debugger_interactive_does_not_print_console_output_before_stepping() {
     let (script_path, _test_file_path) = write_logging_test_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("check")
@@ -728,12 +728,12 @@ fn cli_debugger_interactive_does_not_print_console_output_before_stepping() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     child.stdin.as_mut().expect("stdin available").write_all(b"q\n").expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -747,7 +747,7 @@ fn cli_debugger_interactive_does_not_print_console_output_before_stepping() {
 fn cli_debugger_interactive_does_not_duplicate_startup_console_logs_for_structured_arrays() {
     let script_path = write_structured_console_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect")
@@ -757,12 +757,12 @@ fn cli_debugger_interactive_does_not_duplicate_startup_console_logs_for_structur
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     child.stdin.as_mut().expect("stdin available").write_all(b"n\nq\n").expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -776,7 +776,7 @@ fn cli_debugger_interactive_does_not_duplicate_startup_console_logs_for_structur
 fn cli_debugger_accepts_state_object_arg_and_renders_source_level_value() {
     let (script_path, _test_file_path) = write_structured_args_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect")
@@ -786,13 +786,13 @@ fn cli_debugger_accepts_state_object_arg_and_renders_source_level_value() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"vars\np next\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -808,7 +808,7 @@ fn cli_debugger_accepts_state_object_arg_and_renders_source_level_value() {
 fn cli_debugger_accepts_state_object_array_arg_and_renders_source_level_value() {
     let (script_path, _test_file_path) = write_structured_args_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect_many")
@@ -820,13 +820,13 @@ fn cli_debugger_accepts_state_object_array_arg_and_renders_source_level_value() 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"vars\np next_states\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -840,7 +840,7 @@ fn cli_debugger_accepts_state_object_array_arg_and_renders_source_level_value() 
 fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() {
     let (script_path, _test_file_path) = write_structured_ctor_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect")
@@ -850,13 +850,13 @@ fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"vars\np seed\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -869,7 +869,7 @@ fn cli_debugger_accepts_struct_constructor_arg_and_renders_source_level_value() 
 fn cli_debugger_evals_structured_state_expressions() {
     let script_path = write_debug_state_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect_state")
@@ -881,13 +881,13 @@ fn cli_debugger_evals_structured_state_expressions() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"eval next_state\neval next_state.amount\neval next_state.amount + amount\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -902,7 +902,7 @@ fn cli_debugger_evals_structured_state_expressions() {
 fn cli_debugger_vars_split_constructor_args_from_constants() {
     let script_path = write_debug_state_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--function")
         .arg("inspect_state")
@@ -914,13 +914,13 @@ fn cli_debugger_vars_split_constructor_args_from_constants() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = b"vars\nq\n";
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -939,14 +939,14 @@ fn cli_debugger_vars_split_constructor_args_from_constants() {
 fn cli_debugger_run_test_file_pass_case() {
     let (_script_path, test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run")
         .arg("--test-file")
         .arg(&test_file_path)
         .arg("--test-name")
         .arg("pass_case")
         .output()
-        .expect("run cli-debugger pass test");
+        .expect("run silverscript-cli-debugger pass test");
 
     assert!(
         output.status.success(),
@@ -962,14 +962,14 @@ fn cli_debugger_run_test_file_pass_case() {
 fn cli_debugger_run_test_file_expected_fail_case() {
     let (_script_path, test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run")
         .arg("--test-file")
         .arg(&test_file_path)
         .arg("--test-name")
         .arg("fail_case")
         .output()
-        .expect("run cli-debugger expected-fail test");
+        .expect("run silverscript-cli-debugger expected-fail test");
 
     assert!(
         output.status.success(),
@@ -985,12 +985,12 @@ fn cli_debugger_run_test_file_expected_fail_case() {
 fn cli_debugger_run_all_uses_test_file_suite() {
     let (_script_path, test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run-all")
         .arg("--test-file")
         .arg(&test_file_path)
         .output()
-        .expect("run cli-debugger --run-all");
+        .expect("run silverscript-cli-debugger --run-all");
 
     assert!(
         output.status.success(),
@@ -1010,12 +1010,12 @@ fn cli_debugger_run_all_uses_test_file_suite() {
 fn cli_debugger_run_all_supports_structured_args_from_test_file() {
     let (_script_path, test_file_path) = write_structured_args_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run-all")
         .arg("--test-file")
         .arg(&test_file_path)
         .output()
-        .expect("run cli-debugger --run-all for structured args");
+        .expect("run silverscript-cli-debugger --run-all for structured args");
 
     assert!(
         output.status.success(),
@@ -1033,12 +1033,12 @@ fn cli_debugger_run_all_supports_structured_args_from_test_file() {
 fn cli_debugger_run_all_supports_structured_constructor_args_from_test_file() {
     let (_script_path, test_file_path) = write_structured_ctor_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run-all")
         .arg("--test-file")
         .arg(&test_file_path)
         .output()
-        .expect("run cli-debugger --run-all for structured ctor args");
+        .expect("run silverscript-cli-debugger --run-all for structured ctor args");
 
     assert!(
         output.status.success(),
@@ -1055,11 +1055,11 @@ fn cli_debugger_run_all_supports_structured_constructor_args_from_test_file() {
 fn cli_debugger_run_all_infers_test_file_from_script_path() {
     let (script_path, _test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run-all")
         .output()
-        .expect("run cli-debugger --run-all with inferred sidecar");
+        .expect("run silverscript-cli-debugger --run-all with inferred sidecar");
 
     assert!(
         output.status.success(),
@@ -1079,13 +1079,13 @@ fn cli_debugger_run_all_infers_test_file_from_script_path() {
 fn cli_debugger_run_all_uses_script_override_for_mismatched_sidecar_name() {
     let (script_path, test_file_path) = write_named_test_fixture("actual_contract.sil", "suite.test.json");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run-all")
         .arg("--test-file")
         .arg(&test_file_path)
         .output()
-        .expect("run cli-debugger --run-all with script override");
+        .expect("run silverscript-cli-debugger --run-all with script override");
 
     assert!(
         output.status.success(),
@@ -1105,13 +1105,13 @@ fn cli_debugger_run_all_uses_script_override_for_mismatched_sidecar_name() {
 fn cli_debugger_run_test_name_infers_test_file_from_script_path() {
     let (script_path, _test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run")
         .arg("--test-name")
         .arg("pass_case")
         .output()
-        .expect("run cli-debugger with inferred sidecar");
+        .expect("run silverscript-cli-debugger with inferred sidecar");
 
     assert!(
         output.status.success(),
@@ -1127,14 +1127,14 @@ fn cli_debugger_run_test_name_infers_test_file_from_script_path() {
 fn cli_debugger_run_prints_console_logs_before_pass() {
     let (_script_path, test_file_path) = write_logging_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run")
         .arg("--test-file")
         .arg(&test_file_path)
         .arg("--test-name")
         .arg("log_case")
         .output()
-        .expect("run cli-debugger logging test");
+        .expect("run silverscript-cli-debugger logging test");
 
     assert!(
         output.status.success(),
@@ -1153,13 +1153,13 @@ fn cli_debugger_run_prints_console_logs_before_pass() {
 fn cli_debugger_run_test_name_requires_matching_sidecar_or_explicit_test_file() {
     let (script_path, _test_file_path) = write_named_test_fixture("actual_contract.sil", "suite.test.json");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run")
         .arg("--test-name")
         .arg("pass_case")
         .output()
-        .expect("run cli-debugger without matching inferred script");
+        .expect("run silverscript-cli-debugger without matching inferred script");
 
     assert!(!output.status.success(), "expected failure when inferred sidecar script is missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1171,10 +1171,10 @@ fn cli_debugger_run_test_name_requires_matching_sidecar_or_explicit_test_file() 
 
 #[test]
 fn cli_debugger_run_all_requires_test_file() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run-all")
         .output()
-        .expect("run cli-debugger --run-all without test file");
+        .expect("run silverscript-cli-debugger --run-all without test file");
 
     assert!(!output.status.success(), "expected failure when both script path and --test-file are missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1185,12 +1185,12 @@ fn cli_debugger_run_all_requires_test_file() {
 fn cli_debugger_test_file_requires_test_name_in_run_mode() {
     let (_script_path, test_file_path) = write_test_fixture();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run")
         .arg("--test-file")
         .arg(&test_file_path)
         .output()
-        .expect("run cli-debugger --run --test-file without test-name");
+        .expect("run silverscript-cli-debugger --run --test-file without test-name");
 
     assert!(!output.status.success(), "expected failure when --test-name is missing");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1199,12 +1199,12 @@ fn cli_debugger_test_file_requires_test_name_in_run_mode() {
 
 #[test]
 fn cli_debugger_test_name_requires_script_path_or_test_file() {
-    let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg("--run")
         .arg("--test-name")
         .arg("pass_case")
         .output()
-        .expect("run cli-debugger --run --test-name without script path or test file");
+        .expect("run silverscript-cli-debugger --run --test-name without script path or test file");
 
     assert!(!output.status.success(), "expected failure when neither script path nor test file is provided");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1216,7 +1216,7 @@ fn cli_debugger_runs_source_level_covenant_tests() {
     let (script_path, test_file_path) = write_covenant_debug_fixture();
 
     for test_name in ["source_leader", "source_delegate"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
             .arg(&script_path)
             .arg("--run")
             .arg("--test-file")
@@ -1242,7 +1242,7 @@ fn cli_debugger_does_not_reuse_active_args_for_covenant_companions() {
     let (script_path, test_file_path) = write_covenant_distinct_delegate_args_fixture();
 
     for test_name in ["leader_uses_only_leader_args", "delegate_uses_only_delegate_args"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+        let output = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
             .arg(&script_path)
             .arg("--run")
             .arg("--test-file")
@@ -1266,7 +1266,7 @@ fn cli_debugger_does_not_reuse_active_args_for_covenant_companions() {
 fn cli_debugger_interactive_covenant_session_uses_source_level_prev_states() {
     let (script_path, test_file_path) = write_covenant_debug_fixture();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--test-file")
         .arg(&test_file_path)
@@ -1276,7 +1276,7 @@ fn cli_debugger_interactive_covenant_session_uses_source_level_prev_states() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("failed to spawn cli-debugger");
+        .expect("failed to spawn silverscript-cli-debugger");
 
     let input = br#"b 10
 c
@@ -1287,8 +1287,8 @@ q
 "#;
     child.stdin.as_mut().expect("stdin available").write_all(input).expect("write stdin");
 
-    let output = child.wait_with_output().expect("wait for cli-debugger");
-    assert!(output.status.success(), "cli-debugger exited with status {:?}", output.status.code());
+    let output = child.wait_with_output().expect("wait for silverscript-cli-debugger");
+    assert!(output.status.success(), "silverscript-cli-debugger exited with status {:?}", output.status.code());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1310,7 +1310,7 @@ q
 fn cli_debugger_supports_state_first_auth_transition_fixtures() {
     let (script_path, test_file_path) = write_state_first_auth_transition_fixture();
 
-    let pass = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let pass = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run")
         .arg("--test-file")
@@ -1321,7 +1321,7 @@ fn cli_debugger_supports_state_first_auth_transition_fixtures() {
         .expect("run state_first_pass");
     assert!(pass.status.success(), "expected pass fixture to succeed: {}", String::from_utf8_lossy(&pass.stderr));
 
-    let fail = Command::new(env!("CARGO_BIN_EXE_cli-debugger"))
+    let fail = Command::new(env!("CARGO_BIN_EXE_silverscript-cli-debugger"))
         .arg(&script_path)
         .arg("--run")
         .arg("--test-file")

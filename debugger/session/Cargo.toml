@@ -1,5 +1,5 @@
 [package]
-name = "debugger-session"
+name = "silverscript-debugger-session"
 description = "Debug sessions and test execution for SilverScript contracts"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "debugger_session"
+name = "silverscript_debugger_session"
 path = "src/lib.rs"
 
 [dependencies]

@@ -1,5 +1,5 @@
 [package]
-name = "tree-sitter-silverscript"
+name = "silverscript-tree-sitter-silverscript"
 description = "Kaspa SilverScript Lang"
 version = "1.0.1"
 authors = ["Kaspa Developers"]

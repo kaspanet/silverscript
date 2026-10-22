@@ -14,13 +14,13 @@ use kaspa_txscript::opcodes::codes::OpTrue;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, pay_to_script_hash_script};
 
-use debugger_session::{
+use silverscript_abi::{ArtifactValue, SilContractArtifact, encode_contract_entry_sig_script};
+use silverscript_debug_artifact::{SilDebugArtifact, compile_contract};
+use silverscript_debugger_session::{
     covenant::resolve_covenant_call_target,
     format_value,
     session::{DebugSession, DebugValue, ShadowTxContext},
 };
-use silverscript_abi::{ArtifactValue, SilContractArtifact, encode_contract_entry_sig_script};
-use silverscript_debug_artifact::{SilDebugArtifact, compile_contract};
 use silverscript_lang::ast::parse_contract_ast;
 use silverscript_lang::compiler::CompileOptions;
 use silverscript_lang::debug_info::StepKind;
@@ -101,7 +101,7 @@ where
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
 
     let flags = EngineFlags::default();
-    let engine = debugger_session::session::DebugEngine::new(ctx, flags);
+    let engine = silverscript_debugger_session::session::DebugEngine::new(ctx, flags);
 
     let entry = parsed_contract
         .functions
@@ -1089,7 +1089,7 @@ contract MissingStructuredSource() {
     let sig_cache = Cache::new(10_000);
     let reused_values = SigHashReusedValuesUnsync::new();
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values);
-    let engine = debugger_session::session::DebugEngine::new(ctx, EngineFlags::default());
+    let engine = silverscript_debugger_session::session::DebugEngine::new(ctx, EngineFlags::default());
     let sigscript = encode_entry_sig_script(&compiled, "inspect", &[artifact_object([("amount", 7.into())])])?;
     let mut session = DebugSession::from_artifact(&sigscript, &compiled, "MissingStructuredSource", engine)?;
 
@@ -1664,7 +1664,7 @@ contract CovLocal() {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
     let input_ref = &tx.inputs[0];
     let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
-    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+    let engine = silverscript_debugger_session::session::DebugEngine::from_transaction_input(
         &populated_tx,
         input_ref,
         0,
@@ -1727,7 +1727,7 @@ contract CovEval() {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
     let input_ref = &tx.inputs[0];
     let utxo_ref = populated_tx.utxo(0).ok_or("missing utxo for input 0")?;
-    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+    let engine = silverscript_debugger_session::session::DebugEngine::from_transaction_input(
         &populated_tx,
         input_ref,
         0,
@@ -1862,7 +1862,7 @@ contract Routed() {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
     let input_ref = &tx.inputs[1];
     let utxo_ref = populated_tx.utxo(1).ok_or("missing active delegate utxo")?;
-    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+    let engine = silverscript_debugger_session::session::DebugEngine::from_transaction_input(
         &populated_tx,
         input_ref,
         1,
@@ -1971,7 +1971,7 @@ contract CovDebugDemo(int initial_value) {
     let ctx = EngineCtx::new(&sig_cache).with_reused(&reused_values).with_covenants_ctx(&cov_ctx);
     let input_ref = &tx.inputs[0];
     let utxo_ref = populated_tx.utxo(0).ok_or("missing active utxo")?;
-    let engine = debugger_session::session::DebugEngine::from_transaction_input(
+    let engine = silverscript_debugger_session::session::DebugEngine::from_transaction_input(
         &populated_tx,
         input_ref,
         0,

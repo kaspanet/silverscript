@@ -61,7 +61,7 @@ Run with `--help` to see all available options.
 The workspace includes a source-level debugger for stepping through scripts:
 
 ```bash
-cargo run -p cli-debugger -- \
+cargo run -p silverscript-cli-debugger -- \
   silverscript-lang/tests/examples/if_statement.sil \
   --function hello \
   --ctor-arg 3 --ctor-arg 10 \

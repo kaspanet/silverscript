@@ -1055,20 +1055,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "cli-debugger"
-version = "1.0.1"
-dependencies = [
- "clap",
- "debugger-session",
- "kaspa-consensus-core",
- "kaspa-txscript",
- "kaspa-txscript-errors",
- "silverscript-abi",
- "silverscript-debug-artifact",
- "silverscript-lang",
-]
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,23 +1225,6 @@ dependencies = [
  "dispatch2",
  "nix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "debugger-session"
-version = "1.0.1"
-dependencies = [
- "faster-hex 0.10.0",
- "kaspa-addresses",
- "kaspa-consensus-core",
- "kaspa-txscript",
- "kaspa-txscript-errors",
- "serde",
- "serde_json",
- "silverscript-abi",
- "silverscript-debug-artifact",
- "silverscript-lang",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -3867,6 +3836,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "silverscript-cli-debugger"
+version = "1.0.1"
+dependencies = [
+ "clap",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
+ "silverscript-debugger-session",
+ "silverscript-lang",
+]
+
+[[package]]
 name = "silverscript-core"
 version = "1.0.1"
 dependencies = [
@@ -3881,6 +3864,23 @@ dependencies = [
  "serde",
  "silverscript-abi",
  "silverscript-lang",
+]
+
+[[package]]
+name = "silverscript-debugger-session"
+version = "1.0.1"
+dependencies = [
+ "faster-hex 0.10.0",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
+ "serde",
+ "serde_json",
+ "silverscript-abi",
+ "silverscript-debug-artifact",
+ "silverscript-lang",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
