@@ -24,9 +24,7 @@ fn parses_all_examples_without_errors() {
     assert!(!example_files.is_empty(), "no .sil files found in {}", examples_dir.display());
 
     let mut parser = Parser::new();
-    parser
-        .set_language(&silverscript_tree_sitter_silverscript::LANGUAGE.into())
-        .expect("failed to load tree-sitter-silverscript grammar");
+    parser.set_language(&silverscript_tree_sitter::LANGUAGE.into()).expect("failed to load tree-sitter-silverscript grammar");
 
     let mut failures = Vec::new();
 

@@ -8,7 +8,7 @@
 //! contract Demo() {}
 //! "#;
 //! let mut parser = tree_sitter::Parser::new();
-//! let language = silverscript_tree_sitter_silverscript::LANGUAGE;
+//! let language = silverscript_tree_sitter::LANGUAGE;
 //! parser
 //!     .set_language(&language.into())
 //!     .expect("Error loading SilverScript parser");
