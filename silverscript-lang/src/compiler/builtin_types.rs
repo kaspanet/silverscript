@@ -78,7 +78,8 @@ pub(super) fn builtin_return(name: &str) -> Option<BuiltinReturn> {
         | "OpCovInputCount"
         | "OpCovInputIdx"
         | "OpCovOutputCount"
-        | "OpCovOutputIdx" => scalar(TypeBase::Int),
+        | "OpCovOutputIdx"
+        | "OpOutputAuthorizingInput" => scalar(TypeBase::Int),
         "length" => scalar(TypeBase::Int),
         "OpTxInputIsCoinbase" | "checkSig" | "checkSigEcdsa" | "checkMsgSig" | "checkMsgSigEcdsa" => scalar(TypeBase::Bool),
         "g16.verify"
@@ -164,7 +165,8 @@ pub(super) fn builtin_parameters(name: &str) -> Option<Vec<(&'static str, TypeRe
         | "OpTxInputSpkLen"
         | "OpTxOutputSpkLen"
         | "OpInputCovenantId"
-        | "OpOutputCovenantId" => vec![("idx", scalar(TypeBase::Int))],
+        | "OpOutputCovenantId"
+        | "OpOutputAuthorizingInput" => vec![("idx", scalar(TypeBase::Int))],
         "OpTxPayloadSubstr" => vec![("start", scalar(TypeBase::Int)), ("end", scalar(TypeBase::Int))],
         "OpTxInputScriptSigSubstr" | "OpTxInputSpkSubstr" | "OpTxOutputSpkSubstr" => {
             vec![("idx", scalar(TypeBase::Int)), ("start", scalar(TypeBase::Int)), ("end", scalar(TypeBase::Int))]
