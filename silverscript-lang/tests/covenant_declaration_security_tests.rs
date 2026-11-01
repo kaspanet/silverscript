@@ -101,7 +101,7 @@ const COV_N_TO_M_DIFFERENT_SCRIPT_SOURCE: &str = r#"
     }
 "#;
 
-const KCC20_SHAPED_SOURCE: &str = r#"
+const FUNGIBLE_TOKEN_SHAPED_SOURCE: &str = r#"
     contract Token(byte[1] initial_owner, int initial_amount) {
         byte[1] owner = initial_owner;
         int amount = initial_amount;
@@ -181,16 +181,16 @@ fn state_arg(value: i64) -> ArtifactValue {
     BTreeMap::from([("value".to_string(), value.into())]).into()
 }
 
-fn compile_kcc20_state(owner: u8, amount: i64) -> silverscript_abi::SilAbiArtifact {
+fn compile_fungible_token_state(owner: u8, amount: i64) -> silverscript_abi::SilAbiArtifact {
     compile_to_sil_abi_artifact_with_options(
-        KCC20_SHAPED_SOURCE,
+        FUNGIBLE_TOKEN_SHAPED_SOURCE,
         &[ArtifactValue::Bytes(vec![owner]), ArtifactValue::Int(amount)],
         CompileOptions::default(),
     )
-    .expect("KCC20-shaped contract compiles")
+    .expect("FungibleToken-shaped contract compiles")
 }
 
-fn kcc20_state_arg(owner: u8, amount: i64) -> ArtifactValue {
+fn fungible_token_state_arg(owner: u8, amount: i64) -> ArtifactValue {
     BTreeMap::from([("owner".to_string(), vec![owner].into()), ("amount".to_string(), amount.into())]).into()
 }
 
@@ -454,11 +454,11 @@ fn many_to_many_happy_path_succeeds() {
 
 #[test]
 fn shared_delegate_body_authenticates_each_inputs_local_state() {
-    let in0 = compile_kcc20_state(1, 10);
-    let in1 = compile_kcc20_state(2, 7);
-    let out0 = compile_kcc20_state(3, 8);
-    let out1 = compile_kcc20_state(4, 9);
-    let next_states = ArtifactValue::Array(vec![kcc20_state_arg(3, 8), kcc20_state_arg(4, 9)]);
+    let in0 = compile_fungible_token_state(1, 10);
+    let in1 = compile_fungible_token_state(2, 7);
+    let out0 = compile_fungible_token_state(3, 8);
+    let out1 = compile_fungible_token_state(4, 9);
+    let next_states = ArtifactValue::Array(vec![fungible_token_state_arg(3, 8), fungible_token_state_arg(4, 9)]);
 
     let leader_sigscript = covenant_decl_sigscript(&in0, "transferPolicy", vec![next_states, ArtifactValue::Bytes(vec![1])], true);
     let delegate_sigscript = covenant_decl_sigscript(&in1, "transferPolicy", vec![ArtifactValue::Bytes(vec![2])], false);

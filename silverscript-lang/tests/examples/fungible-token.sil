@@ -1,4 +1,7 @@
-contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
+// This contract is just an example, not a token standard. It may contain errors
+// and is not guaranteed to be secure. For the actual standard, see:
+// https://github.com/kaspanet/kccs/blob/main/kcc-0020.md
+contract FungibleToken(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
     byte constant IDENTIFIER_PUBKEY = 0x00;
     byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
     byte constant IDENTIFIER_COVENANT_ID = 0x02;

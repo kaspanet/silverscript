@@ -1,11 +1,14 @@
-# The KCC20 Contract
+# The FungibleToken Contract
 
-Source: `silverscript-lang/tests/examples/kcc20.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/cd3857d93e53c320d2a8b8eebb391773a12b38f4/silverscript-lang/tests/examples/kcc20.sil)
+Source: `silverscript-lang/tests/examples/fungible-token.sil` [[Link]](https://github.com/kaspanet/silverscript/blob/master/silverscript-lang/tests/examples/fungible-token.sil)
 
 ## Full Source
 
 ```js
-contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
+// This contract is just an example, not a token standard. It may contain errors
+// and is not guaranteed to be secure. For the actual standard, see:
+// https://github.com/kaspanet/kccs/blob/main/kcc-0020.md
+contract FungibleToken(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType, bool genesisIsMinter, int maxCovIns, int maxCovOuts) {
     byte constant IDENTIFIER_PUBKEY = 0x00;
     byte constant IDENTIFIER_SCRIPT_HASH = 0x01;
     byte constant IDENTIFIER_COVENANT_ID = 0x02;
@@ -68,7 +71,7 @@ contract KCC20(byte[32] genesisPk, int genesisAmount, byte genesisIdentifierType
 The contract constructor is:
 
 ```js
-contract KCC20(
+contract FungibleToken(
     byte[32] genesisPk,
     int genesisAmount,
     byte genesisIdentifierType,
@@ -101,7 +104,7 @@ Every covenant transition reads and writes these fields as `State`.
 
 ## Ownership Modes
 
-KCC20 defines three constants:
+FungibleToken defines three constants:
 
 ```js
 byte constant IDENTIFIER_PUBKEY = 0x00;
@@ -126,7 +129,7 @@ byte[] spk = new ScriptPubKeyP2SH(prevStates[i].ownerIdentifier);
 require(tx.inputs[witnesses[i]].scriptPubKey == spk);
 ```
 
-Here KCC20 does not validate signatures itself. Instead it requires that the transaction include an input whose scriptPubKey corresponds to the owner script hash. In other words, the script-hash-owned KCC20 branch is authorized by the presence of a matching P2SH-controlled input.
+Here FungibleToken does not validate signatures itself. Instead it requires that the transaction include an input whose scriptPubKey corresponds to the owner script hash. In other words, the script-hash-owned FungibleToken branch is authorized by the presence of a matching P2SH-controlled input.
 
 ### Covenant-ID ownership
 
@@ -134,7 +137,7 @@ Here KCC20 does not validate signatures itself. Instead it requires that the tra
 require(OpInputCovenantId(witnesses[i]) == prevStates[i].ownerIdentifier);
 ```
 
-This lets a KCC20 branch be owned by another covenant. Spending it requires a witness input whose covenant ID matches the owner identifier.
+This lets a FungibleToken branch be owned by another covenant. Spending it requires a witness input whose covenant ID matches the owner identifier.
 
 ## Ownership Diagram
 
@@ -162,9 +165,9 @@ Important details:
 - `witnesses` exists so the contract can jump directly to the relevant transaction inputs instead of scanning all inputs to discover which one should authorize each previous state.
 - the loop upper bound is controlled by `maxCovIns`
 
-This function is the core of KCC20's flexible ownership model.
+This function is the core of FungibleToken's flexible ownership model.
 
-For the non-pubkey ownership case, see the [Inter-Covenant Communication](./kcc20-overview.md#inter-covenant-communication) explanation in the overview chapter.
+For the non-pubkey ownership case, see the [Inter-Covenant Communication](./fungible-token-overview.md#inter-covenant-communication) explanation in the overview chapter.
 
 ## `checkAmounts`
 
@@ -183,7 +186,7 @@ if(!isMinter) {
 }
 ```
 
-So KCC20 has two distinct modes:
+So FungibleToken has two distinct modes:
 
 - `isMinter == false`: token supply must be preserved across the transition
 - `isMinter == true`: the branch may increase or decrease `amount`
@@ -218,11 +221,11 @@ if(!isMinter) {
 }
 ```
 
-This matters because otherwise an ordinary KCC20 branch could escape the supply rules simply by setting `isMinter = true` in a child state.
+This matters because otherwise an ordinary FungibleToken branch could escape the supply rules simply by setting `isMinter = true` in a child state.
 
 ## The Covenant Entrypoint
 
-KCC20 exposes one covenant declaration:
+FungibleToken exposes one covenant declaration:
 
 ```js
 #[covenant(binding = cov, from = maxCovIns, to = maxCovOuts)]

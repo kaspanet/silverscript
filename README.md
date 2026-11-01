@@ -77,7 +77,7 @@ cargo run -p silverscript-cli-debugger -- \
 
 ## Documentation
 
-See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, [DECL.md](docs/DECL.md) for the covenant declaration spec, and the [KCC20 book](https://kaspanet.github.io/silverscript/kcc20-book/).
+See [TUTORIAL.md](docs/TUTORIAL.md) for a full language and usage tutorial, [DECL.md](docs/DECL.md) for the covenant declaration spec, and the [Fungible Token book](https://kaspanet.github.io/silverscript/fungible-token-book/).
 
 ## Credits
 
