@@ -1,12 +1,12 @@
-name: Publish KCC20 Book
+name: Publish Fungible Token Book
 
 on:
   push:
     branches:
       - master
     paths:
-      - ".github/workflows/kcc20-book-pages.yaml"
-      - "docs/kcc20-book/**"
+      - ".github/workflows/fungible-token-book-pages.yaml"
+      - "docs/fungible-token-book/**"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: kcc20-book-pages
+  group: fungible-token-book-pages
   cancel-in-progress: true
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           prefix-key: silverscript-v1
-          shared-key: kcc20-book-pages
+          shared-key: fungible-token-book-pages
           cache-on-failure: "false"
           cache-bin: "false"
           cache-all-crates: "false"
@@ -51,12 +51,12 @@ jobs:
         run: cargo install mdbook-mermaid
 
       - name: Build book
-        run: mdbook build docs/kcc20-book
+        run: mdbook build docs/fungible-token-book
 
       - name: Prepare Pages artifact
         run: |
-          mkdir -p dist/kcc20-book
-          cp -R docs/kcc20-book/book/. dist/kcc20-book/
+          mkdir -p dist/fungible-token-book
+          cp -R docs/fungible-token-book/book/. dist/fungible-token-book/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4

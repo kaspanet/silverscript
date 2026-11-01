@@ -4,8 +4,8 @@ This chapter lists the main properties these examples are meant to exhibit.
 
 At a high level, the two contracts play different roles:
 
-- `KCC20` is the main example of a fungible covenant state machine with flexible ownership rules.
-- `KCC20Minter` is the main example of covenant composition, where one covenant governs the issuance policy of another.
+- `FungibleToken` is the main example of a fungible covenant state machine with flexible ownership rules.
+- `FungibleTokenMinter` is the main example of covenant composition, where one covenant governs the issuance policy of another.
 
 These examples are easiest to understand as a small set of recurring stories:
 
@@ -15,17 +15,17 @@ These examples are easiest to understand as a small set of recurring stories:
 - ownership can belong to a key, a script hash, or another covenant
 - a separate covenant can bind itself to a token covenant and control future issuance
 
-## 1. KCC20 Behaves Like A Fungible Token State Machine
+## 1. FungibleToken Behaves Like A Fungible Token State Machine
 
-KCC20 can:
+FungibleToken can:
 
 - move a full balance from one owner to another
 - split one balance into several balances
 - merge several balances back into one
 
-That means KCC20 supports the basic transformations people expect from a fungible asset model.
+That means FungibleToken supports the basic transformations people expect from a fungible asset model.
 
-## 2. Ordinary KCC20 Branches Conserve Supply
+## 2. Ordinary FungibleToken Branches Conserve Supply
 
 Non-minter branches cannot:
 
@@ -60,18 +60,18 @@ This is one of the strongest parts of the example. It shows that ownership can m
 
 That is much more expressive than a token model that only understands pubkeys.
 
-## 5. Another Covenant Can Own KCC20
+## 5. Another Covenant Can Own FungibleToken
 
-A KCC20 branch can be owned by a covenant ID, and that ownership mode is what allows KCC20Minter to control issuance.
+A FungibleToken branch can be owned by a covenant ID, and that ownership mode is what allows FungibleTokenMinter to control issuance.
 
 This is the bridge from "programmable ownership" to "cross-contract policy".
 
-## 6. KCC20Minter Controls Issuance, Not KCC20 Alone
+## 6. FungibleTokenMinter Controls Issuance, Not FungibleToken Alone
 
 The two-contract example shows a clean split:
 
-- KCC20 defines token semantics
-- KCC20Minter defines issuance policy
+- FungibleToken defines token semantics
+- FungibleTokenMinter defines issuance policy
 
 This matters because it keeps the token contract reusable. Different issuance policies could be modeled by different controller covenants.
 
@@ -79,9 +79,9 @@ This matters because it keeps the token contract reusable. Different issuance po
 
 One of the most important properties proven by the examples is that a controller covenant can be created first, then initialize itself against an asset covenant created in the next transaction.
 
-That is what `init` in KCC20Minter does when it records:
+That is what `init` in FungibleTokenMinter does when it records:
 
-- the covenant ID of the newly created KCC20 output
+- the covenant ID of the newly created FungibleToken output
 
 The important shape is:
 
@@ -95,34 +95,34 @@ plain funding utxo
 [asset genesis/init tx] -> A covenant id + C binds to A
 ```
 
-This is the mechanism that binds the minter to one specific KCC20 instance while preserving a concrete genesis preimage for both covenant IDs.
+This is the mechanism that binds the minter to one specific FungibleToken instance while preserving a concrete genesis preimage for both covenant IDs.
 
 ## 8. Template Validation Makes Cross-Contract Checks Safer
 
-KCC20Minter does not merely inspect some KCC20-looking output. It validates:
+FungibleTokenMinter does not merely inspect some FungibleToken-looking output. It validates:
 
 - the expected template shape
 - the expected template hash
 - the expected state payload
 
-This is critical because it means the minter is validating a real KCC20 state transition, not trusting a lookalike output.
+This is critical because it means the minter is validating a real FungibleToken state transition, not trusting a lookalike output.
 
-The minter reuses the template bytes from the co-spent KCC20 input for both
+The minter reuses the template bytes from the co-spent FungibleToken input for both
 successor outputs. The existing input UTXO commits to its redeem script, and
 the minter checks the extracted template against its expected template hash.
 
 ## 9. The Issuance Budget Is Enforced Across Transactions
 
-The KCC20Minter flow walks through several mint transactions and shows that:
+The FungibleTokenMinter flow walks through several mint transactions and shows that:
 
 - each successful mint reduces remaining issuance allowance
-- each successful mint keeps a zero-amount KCC20 minter branch alive for the next mint
-- each successful mint creates a separate ordinary KCC20 recipient output for the newly minted amount
-- those recipient outputs can later be spent like ordinary KCC20 branches
+- each successful mint keeps a zero-amount FungibleToken minter branch alive for the next mint
+- each successful mint creates a separate ordinary FungibleToken recipient output for the newly minted amount
+- those recipient outputs can later be spent like ordinary FungibleToken branches
 - mint transactions continue to work while issuance allowance remains
 - mint transactions fail when the requested increase would overspend the budget
 
-This is the clearest statement of what KCC20Minter is for.
+This is the clearest statement of what FungibleTokenMinter is for.
 
 ## 10. The Whole Example Is About Covenant Composition
 

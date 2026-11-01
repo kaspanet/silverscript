@@ -1,0 +1,88 @@
+// This companion minter is just an example. It may contain errors and is not
+// guaranteed to be secure. For the actual token standard, see:
+// https://github.com/kaspanet/kccs/blob/main/kcc-0020.md
+contract FungibleTokenMinter(pubkey owner, byte[32] initFungibleTokenCovid, int initAmount,
+    bool initInitialized, int templatePrefixLen, int templateSuffixLen, byte[32] expectedTemplateHash) {
+
+    byte[32] fungibleTokenCovid = initFungibleTokenCovid;
+    int amount = initAmount;
+    bool initialized = initInitialized;
+
+    struct FungibleTokenState {
+        byte[32] ownerIdentifier;
+        byte identifierType;
+        int amount;
+        bool isMinter;
+    }
+
+    byte constant IDENTIFIER_COVENANT_ID = 0x02;
+
+    function calcInAmount(int fungibleTokenInputIdx) : int {
+        FungibleTokenState fungibleTokenPrevState = readInputStateWithTemplate(
+            fungibleTokenInputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
+            expectedTemplateHash
+        );
+        return fungibleTokenPrevState.amount;
+    }
+
+    function checkMinterFungibleTokenNewState(FungibleTokenState minterFungibleTokenNewState, int fungibleTokenInputIdx){
+        byte[32] controllerId = OpInputCovenantId(this.activeInputIndex);
+        require(minterFungibleTokenNewState.ownerIdentifier == controllerId); // We do not allow the minter to delegate minting authority to another party.
+        require(minterFungibleTokenNewState.identifierType == IDENTIFIER_COVENANT_ID);
+        require(minterFungibleTokenNewState.isMinter); // The minter cannot stop being a minter.
+
+        validateOutputStateWithInputTemplate(
+            OpCovOutputIdx(fungibleTokenCovid, 0),
+            minterFungibleTokenNewState,
+            fungibleTokenInputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
+            expectedTemplateHash
+        );
+    }
+
+    function checkRecipientFungibleTokenNewState(FungibleTokenState recipientFungibleTokenNewState, int fungibleTokenInputIdx){
+        require(!recipientFungibleTokenNewState.isMinter); // We do not allow the minter to designate another minter.
+        validateOutputStateWithInputTemplate(
+            OpCovOutputIdx(fungibleTokenCovid, 1),
+            recipientFungibleTokenNewState,
+            fungibleTokenInputIdx,
+            templatePrefixLen,
+            templateSuffixLen,
+            expectedTemplateHash
+        );
+    }
+
+    #[covenant.singleton]
+    function init(State prevState, State newState, sig s) {
+        require(!initialized);
+        require(newState.fungibleTokenCovid == OpOutputCovenantId(0));
+        require(newState.amount == prevState.amount);
+        require(newState.initialized);
+        require(checkSig(s, owner));
+
+    }
+
+    #[covenant.singleton]
+    function mint(State prevState, State newState, sig s, FungibleTokenState minterFungibleTokenNewState, FungibleTokenState recipientFungibleTokenNewState) {
+        require(initialized);
+        require(newState.amount >= 0);
+        require(newState.initialized);
+        require(newState.fungibleTokenCovid == prevState.fungibleTokenCovid);
+
+        // We focus on the simple case 1-2 minting transfer.
+        require(OpCovOutputCount(fungibleTokenCovid) == 2);
+        require(OpCovInputCount(fungibleTokenCovid) == 1);
+        int fungibleTokenInputIdx = OpCovInputIdx(fungibleTokenCovid, 0);
+
+        checkMinterFungibleTokenNewState(minterFungibleTokenNewState, fungibleTokenInputIdx);
+        checkRecipientFungibleTokenNewState(recipientFungibleTokenNewState, fungibleTokenInputIdx);
+
+        int inAmount = calcInAmount(fungibleTokenInputIdx);
+        int mintedAmount = minterFungibleTokenNewState.amount + recipientFungibleTokenNewState.amount - inAmount;
+        require(newState.amount == amount - mintedAmount);
+        require(checkSig(s, owner));
+    }
+}

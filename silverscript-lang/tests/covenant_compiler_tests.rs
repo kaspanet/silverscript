@@ -836,7 +836,7 @@ fn portable_abi_preserves_covenant_declaration_and_delegate_entries() {
 }
 
 #[test]
-fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
+fn lowers_fungible_token_shaped_public_names_and_shared_delegate_body() {
     let source = r#"
         contract Token(byte[1] initial_owner, int initial_amount) {
             byte[1] owner = initial_owner;
@@ -869,7 +869,7 @@ fn lowers_kcc20_shaped_public_names_and_shared_delegate_body() {
     "#;
 
     let compiled = compile_to_sil_abi_artifact_with_options(source, &[vec![7u8].into(), 10.into()], CompileOptions::default())
-        .expect("KCC20-shaped declaration compiles");
+        .expect("FungibleToken-shaped declaration compiles");
     let abi_artifact = compile_to_sil_abi_artifact(source, &[vec![7u8].into(), 10.into()]).expect("portable ABI compiles");
     let artifact = single_contract(&abi_artifact);
 

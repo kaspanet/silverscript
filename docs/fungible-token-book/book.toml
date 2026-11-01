@@ -1,5 +1,5 @@
 [book]
-title = "KCC20 and KCC20Minter"
+title = "FungibleToken and FungibleTokenMinter"
 authors = ["OpenAI Codex"]
 language = "en"
 src = "src"
@@ -8,7 +8,7 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-site-url = "/kcc20-book/"
+site-url = "/fungible-token-book/"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor]

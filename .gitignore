@@ -3,4 +3,4 @@ target
 .vscode/*
 .codex/*
 *.bak
-docs/kcc20-book/book
+docs/fungible-token-book/book

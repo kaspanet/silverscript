@@ -135,9 +135,9 @@ function transition(State[] prev_states, int fee) : (State[] new_states) {
 }
 ```
 
-### KCC20-shaped transfer interface
+### FungibleToken-shaped transfer interface
 
-Here `State` is the contract's implicit KCC20 state type. The final ABI is
+Here `State` is the contract's implicit FungibleToken state type. The final ABI is
 `transfer(State[],byte[])` and `transfer_delegator(byte[])`:
 
 ```js
@@ -302,7 +302,7 @@ every input.
 For source compatibility, a leader contract with no `#[covenant.delegate]`
 body still receives the inert default delegate. That wrapper checks only that
 the active input is not the group leader and has no parameters. Protocols whose
-delegators have local obligations, including the default KCC20 transfer
+delegators have local obligations, including the default FungibleToken transfer
 configuration, must declare a delegate body.
 
 ## Leader contracts
