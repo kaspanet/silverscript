@@ -12575,6 +12575,55 @@ fn executes_opcode_builtins_covenants() {
 }
 
 #[test]
+fn executes_opcode_output_authorizing_input() {
+    let source = r#"
+        contract Test() {
+            entry main() {
+                require(OpOutputAuthorizingInput(0) == 0);
+                require(OpOutputAuthorizingInput(1) == -1);
+                require(OpOutputAuthorizingInput(2) == 1);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, &[], CompileOptions::default()).expect("compile succeeds");
+    let dispatch_tag = dispatch_tag_for(&compiled, "main");
+    let sigscript = dispatch_tag_sigscript(dispatch_tag);
+    let covenant_id_a = Hash::from_bytes(*b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+
+    let genesis_outpoint = TransactionOutpoint::new(Hash::from_u64_word(11), 1);
+    let inputs = vec![
+        TransactionInput::new(TransactionOutpoint::new(Hash::from_u64_word(10), 0), sigscript, 0, 0),
+        TransactionInput::new(genesis_outpoint, vec![], 0, 0),
+    ];
+
+    let spk = ScriptPublicKey::new(0, b"covenant".to_vec().into());
+    let mut genesis_output = TransactionOutput { value: 30, script_public_key: spk.clone(), covenant: None };
+    let genesis_covenant_id =
+        kaspa_consensus_core::hashing::covenant_id::covenant_id(genesis_outpoint, [(2, &genesis_output)].into_iter());
+    genesis_output.covenant = Some(CovenantBinding { authorizing_input: 1, covenant_id: genesis_covenant_id });
+
+    let outputs = vec![
+        TransactionOutput {
+            value: 10,
+            script_public_key: spk.clone(),
+            covenant: Some(CovenantBinding { authorizing_input: 0, covenant_id: covenant_id_a }),
+        },
+        TransactionOutput { value: 20, script_public_key: spk, covenant: None },
+        genesis_output,
+    ];
+
+    let tx = Transaction::new(1, inputs, outputs, 0, SubnetworkId::from_bytes([0u8; 20]), 0, vec![]);
+
+    let utxo_spk = ScriptPublicKey::new(0, b"utxo".to_vec().into());
+    let entries =
+        vec![UtxoEntry::new(1_000, utxo_spk.clone(), 0, false, Some(covenant_id_a)), UtxoEntry::new(1_000, utxo_spk, 0, false, None)];
+
+    let result = run_bytecode_with_tx_and_covenants(bytecode(&compiled), tx, entries, None);
+    assert!(result.is_ok(), "output authorizing input failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn executes_opcode_chainblock_seq_commit() {
     struct MockSeqCommitAccessor {
         block: Hash,

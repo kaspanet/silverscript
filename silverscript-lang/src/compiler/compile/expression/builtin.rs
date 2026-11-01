@@ -68,6 +68,7 @@ fn opcode_builtin(name: &str) -> Option<u8> {
         "OpAuthOutputIdx" => OpAuthOutputIdx,
         "OpInputCovenantId" => OpInputCovenantId,
         "OpOutputCovenantId" => OpOutputCovenantId,
+        "OpOutputAuthorizingInput" => OpOutputAuthorizingInput,
         "OpCovInputCount" => OpCovInputCount,
         "OpCovInputIdx" => OpCovInputIdx,
         "OpCovOutputCount" => OpCovOutputCount,
