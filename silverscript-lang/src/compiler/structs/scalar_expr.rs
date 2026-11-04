@@ -219,7 +219,7 @@ fn scalar_struct_expr_type(expr: &Expr<'_>, scope: &LoweringScope, structs: &Str
     type_ref.filter(|type_ref| is_struct(type_ref, structs))
 }
 
-fn struct_array_expr_type(
+pub(super) fn struct_array_expr_type(
     expr: &Expr<'_>,
     scope: &LoweringScope,
     structs: &StructRegistry,
