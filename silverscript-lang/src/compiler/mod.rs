@@ -52,7 +52,7 @@ use validate_output_state::lower_validate_output_state;
 
 /// Prefix used for synthetic argument bindings during inline function expansion.
 pub const SYNTHETIC_ARG_PREFIX: &str = "__arg";
-pub const COMPILER_VERSION: &str = "0.1.0";
+pub const COMPILER_VERSION: &str = "0.1.2";
 const COVENANT_POLICY_PREFIX: &str = "__covenant_policy";
 const COVENANT_DELEGATE_POLICY_PREFIX: &str = "__covenant_delegate_policy";
 pub const COVENANT_ENTRYPOINT_AUTH_PREFIX: &str = "__covenant_entrypoint_auth";

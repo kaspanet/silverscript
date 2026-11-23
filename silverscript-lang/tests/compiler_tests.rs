@@ -248,7 +248,7 @@ fn accepts_compatible_pragma_versions() {
         "pragma silverscript ~0.1.0;",
         "pragma silverscript <0.2.0;",
         "pragma silverscript <=0.1.5;",
-        "pragma silverscript =0.1.0;",
+        &format!("pragma silverscript ={COMPILER_VERSION};"),
         "pragma silverscript 0.1.0;",
         "pragma silverscript >=0.1.0, <0.2.0;",
         "pragma silverscript >=0.1.0, <1.0.0;",
@@ -298,10 +298,10 @@ fn compiled_contract_includes_compiler_version() {
 fn rejects_incompatible_pragma_versions() {
     let pragmas = [
         "pragma silverscript ^0.2.0;",
-        "pragma silverscript ~0.1.1;",
+        "pragma silverscript ~0.2.0;",
         "pragma silverscript <0.1.0;",
         "pragma silverscript <=0.0.9;",
-        "pragma silverscript =0.1.1;",
+        "pragma silverscript =0.1.0;",
         "pragma silverscript >=0.1.0, <0.1.0;",
     ];
 

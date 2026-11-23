@@ -3833,7 +3833,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "silverscript-abi"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "faster-hex 0.10.0",
  "kaspa-consensus-core",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "silverscript-cli-debugger"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "clap",
  "kaspa-consensus-core",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "silverscript-core"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "blake3",
  "kaspa-txscript",
@@ -3869,7 +3869,7 @@ dependencies = [
 
 [[package]]
 name = "silverscript-debug-artifact"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "serde",
  "silverscript-abi",
@@ -3878,7 +3878,7 @@ dependencies = [
 
 [[package]]
 name = "silverscript-debugger-session"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "faster-hex 0.10.0",
  "kaspa-addresses",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "silverscript-lang"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "blake2b_simd",
  "blake3",
