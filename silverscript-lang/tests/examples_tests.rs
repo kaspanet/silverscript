@@ -412,6 +412,18 @@ fn compiles_g16_verify_example_and_verifies() {
 }
 
 #[test]
+fn r0_succinct_examples_report_unsupported() {
+    for name in ["r0_succinct.sil", "r0_succinct_sha256.sil"] {
+        let source = load_example_source(name);
+        let args = [vec![0x11u8; 32].into(), vec![0x22u8; 32].into()];
+        let err = compile_to_sil_abi_artifact_with_options(&source, &args, CompileOptions::default())
+            .expect_err("R0 Succinct example should fail to compile");
+        assert!(err.to_string().contains("is currently not supported"), "unexpected error for {name}: {err}");
+    }
+}
+
+#[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn compiles_r0_succinct_example_and_verifies() {
     let source = load_example_source("r0_succinct.sil");
     let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =
@@ -440,6 +452,7 @@ fn compiles_r0_succinct_example_and_verifies() {
 }
 
 #[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn r0_succinct_sha256_example_is_reserved_for_future_use() {
     let source = load_example_source("r0_succinct_sha256.sil");
     let image_id = vec![0x11u8; 32];

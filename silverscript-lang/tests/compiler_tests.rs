@@ -10885,6 +10885,36 @@ fn g16_verify_executes_with_fixture_and_rejects_tampered_input() {
 }
 
 #[test]
+fn r0_succinct_verify_reports_unsupported_with_advisory() {
+    for call_name in ["r0.succinct.verify", "r0.succinct.blake2b.verify", "r0.succinct.poseidon2.verify", "r0.succinct.sha256.verify"]
+    {
+        let call = format!("{call_name}(claim, control_index, control_digests, seal, journal, image_id, control_id)");
+        for statement in [format!("{call};"), format!("require({call});"), format!("{call_name}();")] {
+            let source = format!(
+                r#"
+                    contract R0() {{
+                        entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal,
+                                   byte[32] journal, byte[32] image_id, byte[32] control_id) {{
+                            {statement}
+                        }}
+                    }}
+                "#
+            );
+            let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("R0 Succinct verification should fail");
+            let message = err.to_string();
+            assert!(message.contains(&format!("{call_name}() is currently not supported")), "unexpected error: {err}");
+            assert!(
+                message.contains(
+                    "https://medium.com/@michaelsuttonil/what-the-risc-zero-advisory-means-for-kaspas-zk-covenants-e8cb067ea65b"
+                ),
+                "missing advisory link: {err}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
     let cases = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
 
@@ -10962,6 +10992,7 @@ fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
 }
 
 #[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn r0_succinct_verify_rejects_reserved_non_poseidon_hashes() {
     let b32_a = format!("byte[32](0x{})", "11".repeat(32));
     let b32_b = format!("byte[32](0x{})", "22".repeat(32));
@@ -11018,35 +11049,32 @@ fn r0_g16_verify_lowers_with_sdk_verifier_fragment() {
 }
 
 #[test]
-fn r0_verify_builtins_do_not_return_values() {
-    let b32_a = format!("byte[32](0x{})", "11".repeat(32));
-    let b32_b = format!("byte[32](0x{})", "22".repeat(32));
-    let cases = [
-        format!(
-            r#"
-                contract R0() {{
-                    entry main(byte[] proof) {{
-                        require(r0.g16.verify({b32_a}, proof, {b32_b}));
-                    }}
-                }}
-            "#
-        ),
-        format!(
-            r#"
-                contract R0() {{
-                    entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal, byte[32] journal) {{
-                        bool valid = r0.succinct.verify(claim, control_index, control_digests, seal, journal, {b32_a}, {b32_b});
-                        require(valid);
-                    }}
-                }}
-            "#
-        ),
-    ];
+fn r0_g16_verify_does_not_return_a_value() {
+    let source = r#"
+        contract R0() {
+            entry main(byte[32] journal_hash, byte[] proof, byte[32] image_id) {
+                require(r0.g16.verify(journal_hash, proof, image_id));
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("void verifier should not be an expression");
+    assert!(err.to_string().contains("does not return a value"), "unexpected error: {err}");
+}
 
-    for source in cases {
-        let err = compile_contract(&source, &[], CompileOptions::default()).expect_err("void verifier should not be an expression");
-        assert!(err.to_string().contains("does not return a value"), "unexpected error: {err}");
-    }
+#[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
+fn r0_succinct_verify_does_not_return_a_value() {
+    let source = r#"
+        contract R0() {
+            entry main(byte[32] claim, byte[4] control_index, byte[] control_digests, byte[] seal,
+                       byte[32] journal, byte[32] image_id, byte[32] control_id) {
+                bool valid = r0.succinct.verify(claim, control_index, control_digests, seal, journal, image_id, control_id);
+                require(valid);
+            }
+        }
+    "#;
+    let err = compile_contract(source, &[], CompileOptions::default()).expect_err("void verifier should not be an expression");
+    assert!(err.to_string().contains("does not return a value"), "unexpected error: {err}");
 }
 
 #[test]
@@ -11198,10 +11226,9 @@ fn assert_r0_type_error(source: &str, expected: &str) {
 }
 
 #[test]
-fn r0_verify_builtins_reject_incorrect_argument_types() {
+fn r0_g16_verify_rejects_incorrect_argument_types() {
     let b32_a = format!("byte[32](0x{})", "11".repeat(32));
     let b32_b = format!("byte[32](0x{})", "22".repeat(32));
-    let b4 = format!("byte[4](0x{})", "33".repeat(4));
 
     let g16_cases = [
         (
@@ -11244,6 +11271,14 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
     for (source, expected) in g16_cases {
         assert_r0_type_error(&source, expected);
     }
+}
+
+#[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
+fn r0_succinct_verify_rejects_incorrect_argument_types() {
+    let b32_a = format!("byte[32](0x{})", "11".repeat(32));
+    let b32_b = format!("byte[32](0x{})", "22".repeat(32));
+    let b4 = format!("byte[4](0x{})", "33".repeat(4));
 
     let succinct_calls = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
     for call_name in succinct_calls {
@@ -11339,6 +11374,7 @@ fn r0_verify_builtins_reject_incorrect_argument_types() {
 }
 
 #[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
     let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =
         kaspa_txscript::zk_precompiles::tests::helpers::load_stark_fields();
