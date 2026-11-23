@@ -282,6 +282,7 @@ fn step(state: &mut Stack, instruction: &Instruction, at: &Location<'_>) -> Resu
                     state.pop(at)?; // proof
                     state.pop_count(at)? // public input count
                 }
+                #[allow(deprecated, reason = "stack analysis models the legacy precompile's stack effect")]
                 ZkTag::R0Succinct => 8,
             };
             state.drop_items(count, at)?;
@@ -513,6 +514,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated, reason = "covers the stack effect of the legacy precompile")]
     fn zk_argument_counts_and_saved_values_are_tracked() {
         for tag in [ZkTag::Groth16, ZkTag::R0Succinct] {
             let mut script = vec![OpDrop];

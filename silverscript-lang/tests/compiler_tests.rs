@@ -35,7 +35,7 @@ use silverscript_lang::template::template_hash;
 
 use common::{
     build_sig_script_for_covenant_decl, bytecode, compile_contract, compiled_template_parts_and_hash, encode_entry_sig_script,
-    encode_single_entry_sig_script, entry_by_name, single_contract, state_layout,
+    encode_single_entry_sig_script, entry_by_name, r0_groth16_fixture, single_contract, state_layout,
 };
 
 fn script_builder() -> ScriptBuilder {
@@ -10915,6 +10915,7 @@ fn r0_succinct_verify_reports_unsupported_with_advisory() {
 
 #[test]
 #[ignore = "Re-enable when R0 Succinct verification is supported again"]
+#[allow(deprecated, reason = "retains the expected bytecode for the disabled builtin")]
 fn r0_succinct_verify_lowers_hash_aliases_to_zk_precompile() {
     let cases = ["r0.succinct.poseidon2.verify", "r0.succinct.verify"];
 
@@ -11413,15 +11414,7 @@ fn r0_succinct_verify_runtime_checks_each_hash_with_fixture() {
 
 #[test]
 fn r0_g16_verify_executes_with_fixture() {
-    // Fixture values are copied from rusty-kaspa's
-    // crypto/txscript/zk-sdk/tests/r0_script_builder.rs::load_groth_fixture.
-    // The receipt hex is vendored from
-    // crypto/txscript/zk-sdk/tests/data/zk_builder_tests/groth.rcpt.hex.
-    let journal_hash = kaspa_txscript::hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap();
-    let image_id = kaspa_txscript::hex::decode("75641a540ee2ad9ee5902bcdcdb8b55c0bef4a28287309b858f97b1356c6c2e0").unwrap();
-    let receipt_bytes = kaspa_txscript::hex::decode(include_str!("fixtures/r0_groth16.rcpt.hex").trim()).unwrap();
-    let receipt: risc0_zkvm::Groth16Receipt<risc0_zkvm::ReceiptClaim> = borsh::from_slice(&receipt_bytes).unwrap();
-    let proof = kaspa_txscript_zk_sdk::prepare_r0_groth16_proof(&receipt).unwrap();
+    let (journal_hash, proof, image_id) = r0_groth16_fixture();
 
     let source = r#"
         contract R0() {

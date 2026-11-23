@@ -332,6 +332,7 @@ fn compile_r0_succinct_verify_call<'i>(
 
     compile_typed_builtin_args(ctx, name, args)?;
     ctx.push_data(&[hash_fn_id])?;
+    #[allow(deprecated, reason = "R0 Succinct compilation is disabled above while its lowering is retained")]
     ctx.push_data(&[ZkTag::R0Succinct as u8])?;
     ctx.emit_op(OpZkPrecompile, -8)?;
     ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
