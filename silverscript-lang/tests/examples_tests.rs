@@ -19,7 +19,7 @@ use silverscript_abi::ArtifactValue;
 use silverscript_lang::compiler::{CompileOptions, compile_to_sil_abi_artifact_with_options};
 use std::fs;
 
-use common::{bytecode, encode_entry_sig_script, encode_single_entry_sig_script};
+use common::{bytecode, encode_entry_sig_script, encode_single_entry_sig_script, r0_groth16_fixture};
 
 fn build_null_data_script(tag: i64, message: &str) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpReturn).unwrap().add_i64(tag).unwrap().add_data(message.as_bytes()).unwrap().drain()
@@ -156,19 +156,6 @@ fn bytecode_with_return_checks(bytecode: Vec<u8>, expected: &[i64]) -> Vec<u8> {
 
 fn sigscript_push_bytecode(bytecode: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_data(bytecode).unwrap().drain()
-}
-
-fn r0_groth16_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    // Fixture values are copied from rusty-kaspa's
-    // crypto/txscript/zk-sdk/tests/r0_script_builder.rs::load_groth_fixture.
-    // The receipt hex is vendored from
-    // crypto/txscript/zk-sdk/tests/data/zk_builder_tests/groth.rcpt.hex.
-    let journal_hash = kaspa_txscript::hex::decode("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap();
-    let image_id = kaspa_txscript::hex::decode("75641a540ee2ad9ee5902bcdcdb8b55c0bef4a28287309b858f97b1356c6c2e0").unwrap();
-    let receipt_bytes = kaspa_txscript::hex::decode(include_str!("fixtures/r0_groth16.rcpt.hex").trim()).unwrap();
-    let receipt: risc0_zkvm::Groth16Receipt<risc0_zkvm::ReceiptClaim> = borsh::from_slice(&receipt_bytes).unwrap();
-    let proof = kaspa_txscript_zk_sdk::prepare_r0_groth16_proof(&receipt).unwrap();
-    (journal_hash, proof, image_id)
 }
 
 #[test]
@@ -412,6 +399,18 @@ fn compiles_g16_verify_example_and_verifies() {
 }
 
 #[test]
+fn r0_succinct_examples_report_unsupported() {
+    for name in ["r0_succinct.sil", "r0_succinct_sha256.sil"] {
+        let source = load_example_source(name);
+        let args = [vec![0x11u8; 32].into(), vec![0x22u8; 32].into()];
+        let err = compile_to_sil_abi_artifact_with_options(&source, &args, CompileOptions::default())
+            .expect_err("R0 Succinct example should fail to compile");
+        assert!(err.to_string().contains("is currently not supported"), "unexpected error for {name}: {err}");
+    }
+}
+
+#[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn compiles_r0_succinct_example_and_verifies() {
     let source = load_example_source("r0_succinct.sil");
     let (control_id, seal, claim, hashfn, control_index, control_digests, journal, image_id) =
@@ -440,6 +439,7 @@ fn compiles_r0_succinct_example_and_verifies() {
 }
 
 #[test]
+#[ignore = "Re-enable when R0 Succinct verification is supported again"]
 fn r0_succinct_sha256_example_is_reserved_for_future_use() {
     let source = load_example_source("r0_succinct_sha256.sil");
     let image_id = vec![0x11u8; 32];

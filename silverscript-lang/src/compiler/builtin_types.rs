@@ -1,6 +1,6 @@
 use crate::ast::{ArrayDim, IndexedIntrospectionKind, IntrospectionKind, TypeBase, TypeRef};
 
-use super::STATE_TYPE_NAME;
+use super::{CompilerError, STATE_TYPE_NAME};
 
 fn scalar(base: TypeBase) -> TypeRef {
     TypeRef { base, array_dims: Vec::new() }
@@ -111,6 +111,17 @@ pub(super) fn builtin_return_type(name: &str) -> Option<TypeRef> {
     match builtin_return(name)? {
         BuiltinReturn::Value(type_ref) => Some(type_ref),
         BuiltinReturn::Void => None,
+    }
+}
+
+pub(super) fn r0_succinct_verify_unavailable(name: &str) -> Option<CompilerError> {
+    match name {
+        "r0.succinct.verify" | "r0.succinct.blake2b.verify" | "r0.succinct.poseidon2.verify" | "r0.succinct.sha256.verify" => {
+            Some(CompilerError::Unsupported(format!(
+                "{name}() is currently not supported. See https://medium.com/@michaelsuttonil/what-the-risc-zero-advisory-means-for-kaspas-zk-covenants-e8cb067ea65b"
+            )))
+        }
+        _ => None,
     }
 }
 

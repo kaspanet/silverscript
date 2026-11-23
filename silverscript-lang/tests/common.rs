@@ -42,6 +42,18 @@ pub fn bytecode(artifact: &SilAbiArtifact) -> Vec<u8> {
     single_contract(artifact).compiled.bytecode.clone()
 }
 
+pub fn r0_groth16_fixture() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    // From rusty-kaspa 057589be29c493ab471072bc454afa47c08e4d10 (ZK SDK 2.2.0),
+    // crypto/txscript/zk-sdk/tests/r0_script_builder.rs::load_groth_fixture.
+    let journal_hash = kaspa_txscript::hex::decode("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855").unwrap();
+    let image_id = kaspa_txscript::hex::decode("1202d1e01d53a986c4a3250bc48fb78e7ca1533bc52836b6d4c969b5d5f798b2").unwrap();
+    let receipt_bytes = kaspa_txscript::hex::decode(include_str!("fixtures/r0_groth16.rcpt.hex").trim()).unwrap();
+    let receipt: risc0_zkvm::Groth16Receipt<risc0_zkvm::ReceiptClaim> = borsh::from_slice(&receipt_bytes).unwrap();
+    receipt.verify_integrity().expect("fixture should verify with the current RISC Zero Groth16 key");
+    let proof = kaspa_txscript_zk_sdk::prepare_r0_groth16_proof(&receipt).unwrap();
+    (journal_hash, proof, image_id)
+}
+
 pub fn state_layout(artifact: &SilAbiArtifact) -> CompiledStateLayout {
     let span = single_contract(artifact).compiled.state_span;
     CompiledStateLayout { start: span.offset, len: span.len }

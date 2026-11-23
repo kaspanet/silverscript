@@ -9,7 +9,7 @@ use crate::ast::{
 
 use super::builtin_types::{
     BuiltinReturn, builtin_parameters, builtin_return, constructor_parameters, constructor_return_type, g16_verify_parameter_types,
-    indexed_introspection_type, introspection_type,
+    indexed_introspection_type, introspection_type, r0_succinct_verify_unavailable,
 };
 use super::structs::{StructRegistry, flattened_struct_field_specs_for_type, is_struct, struct_name};
 use super::{
@@ -239,6 +239,9 @@ pub(super) fn check_call<'i>(
     expected: Option<&TypeRef>,
     ctx: &TypeCheckContext<'_, 'i>,
 ) -> Result<Option<TypeRef>, CompilerError> {
+    if let Some(err) = r0_succinct_verify_unavailable(name) {
+        return Err(err);
+    }
     if name == "readInputState" && !ctx.contract_fields.is_empty() {
         check_arity(name, args, 1)?;
         check_expr(&args[0], Some(&scalar_type(TypeBase::Int)), ctx)?;

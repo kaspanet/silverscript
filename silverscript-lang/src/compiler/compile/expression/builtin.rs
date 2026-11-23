@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::builtin_types::{builtin_parameters, g16_verify_parameter_types};
+use crate::compiler::builtin_types::{builtin_parameters, g16_verify_parameter_types, r0_succinct_verify_unavailable};
 use kaspa_txscript::zk_precompiles::tags::ZkTag;
 use kaspa_txscript_zk_sdk::append_r0_groth16_verifier_dynamic_image_id;
 
@@ -316,6 +316,10 @@ fn compile_r0_succinct_verify_call<'i>(
     name: &str,
     args: &[Expr<'i>],
 ) -> Result<(), CompilerError> {
+    if let Some(err) = r0_succinct_verify_unavailable(name) {
+        return Err(err);
+    }
+
     let hash_fn_id = match name {
         "r0.succinct.verify" | "r0.succinct.poseidon2.verify" => 1,
         "r0.succinct.blake2b.verify" | "r0.succinct.sha256.verify" => {
@@ -328,6 +332,7 @@ fn compile_r0_succinct_verify_call<'i>(
 
     compile_typed_builtin_args(ctx, name, args)?;
     ctx.push_data(&[hash_fn_id])?;
+    #[allow(deprecated, reason = "R0 Succinct compilation is disabled above while its lowering is retained")]
     ctx.push_data(&[ZkTag::R0Succinct as u8])?;
     ctx.emit_op(OpZkPrecompile, -8)?;
     ctx.emit_op(OpDrop, -1)?; // OpDrop the OpTrue that is pushed by the verifier
