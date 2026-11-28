@@ -77,15 +77,8 @@ pub(super) fn lower_struct_expr<'i>(
             Ok(flattened)
         }
         ExprKind::ArrayIndex { source, index } => {
-            // TODO: Support indexing any struct-array expression, not only an identifier.
-            let source_type = match &source.kind {
-                ExprKind::Identifier(name) => scope
-                    .vars
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| CompilerError::Unsupported(format!("undefined identifier '{}'", name)))?,
-                _ => return Err(CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name()))),
-            };
+            let source_type = struct_array_expr_type(source, scope, structs, lowerer.contract_constants)?
+                .ok_or_else(|| CompilerError::Unsupported(format!("expression expects struct {}", expected_type.type_name())))?;
             let actual_struct_name = struct_array_name(&source_type, structs)
                 .ok_or_else(|| CompilerError::Unsupported("expression is not a struct".to_string()))?;
             if actual_struct_name != expected_struct_name {
